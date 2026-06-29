@@ -1,0 +1,48 @@
+I’ll systematically review everything before asking for your instructions. Let me work through each item.​​​​​​​​​​​​​​​​
+
+I now have a comprehensive picture of all the components. Let me synthesize everything into a structured review.​​​​​​​​​​​​​​​​
+
+Now I have everything I need. Let me put together the full analysis.​​​​​​​​​​​​​​​​
+
+Blueprint & Repository Review — Complete Analysis
+Here is my full findings before we begin.
+
+1. What I’ve reviewed
+Repos: Softeria ms-365-mcp-server, ForLegalAI mcp-ms-office-documents, LibreChat, LibreChat BYOT discussion, FastMCP docs, Microsoft Graph SDK, Requesty.AI.
+
+2. Key findings per component
+Softeria ms-365-mcp-server (Node.js, not Python)
+This is a mature, 661-star MCP server that covers 200+ Graph API tools across Mail, Calendar, OneDrive, Teams, Contacts, ToDo, Planner, OneNote, and Search. It supports stdio and HTTP transports, OAuth2 with MSAL, multi-account mode, and tool presets (mail, calendar, files, etc.) to limit context load. Critical note: it is written in Node.js, not Python. This is relevant — your FastMCP Python tools will run alongside it, not replace it. A known production risk exists: the OAuth token-sharing approach in HTTP mode has a race-condition bug reported by a contributor in the BYOT discussion. For a multi-user enterprise deployment this needs careful handling.
+ForLegalAI mcp-ms-office-documents (Python + Docker)
+This generates Office files (pptx, docx, eml, xlsx) on demand. It runs as a Docker service on port 8958 with StreamableHTTP transport, and has native LibreChat integration instructions including shared Docker network config. It supports reusable templates (YAML-defined email templates, docx with {{placeholders}}). Excellent fit for MOM drafts, email drafts, and summary documents.
+LibreChat MCP integration
+LibreChat registers MCP servers in librechat.yaml under mcpServers. Both stdio and streamable HTTP transports are supported. The BYOT discussion confirms OAuth token pass-through is the correct pattern: LibreChat holds the user’s OAuth token and injects it as a header or env var into the MCP server call. The key config line is MS365_MCP_OAUTH_TOKEN={{TOKEN}}. LibreChat also supports Agent Builder with granular per-tool toggling, Deferred Tools (lazy-load to save context), and Programmatic Tool Calling for multi-step workflows. MCP servers must be restarted to pick up config changes.
+FastMCP (Python)
+FastMCP 3.x is the de facto standard Python MCP framework — 1M downloads/day, powers 70% of MCP servers across all languages. Decorator-based (@mcp.tool), full async/sync support, OAuth 2.1, Keycloak/Azure support, middleware (auth, logging, rate limiting), persistent state, and streamable HTTP. This is your primary build framework for custom Python MCP tools.
+Requesty.AI
+An LLM gateway (400+ models, OpenAI-compatible API) that replaces direct provider calls. Since the blueprint forbids Claude and OpenAI models, Requesty lets you route to Gemini, Mistral, DeepSeek, Meta Llama, or any other provider via one endpoint. It adds fallback chains, semantic caching, cost controls, and governance. One line of code: base_url="https://router.requesty.ai/v1". It also has a native MCP Gateway feature.
+Microsoft Graph SDK for Python
+msgraph-sdk-python is the official Microsoft Python SDK. Handles delegated auth (user-on-behalf-of), app-only auth, and supports all the Graph endpoints you need. This is what your FastMCP tools will call internally.
+MongoDB
+Used by LibreChat natively for conversation storage. Your platform will extend this to also store email metadata/index, extracted tasks, MOM records, and follow-up reminders.
+
+3. Architecture decisions clarified
+The diagram above shows the 7-layer stack. The key design decisions are:
+The Softeria Node.js MCP server handles the raw Graph API surface (email read, calendar CRUD, contacts, OneDrive). Your custom FastMCP Python servers sit at the same layer and handle higher-level AI functions: summarisation, MOM generation, task extraction, semantic search, and follow-up orchestration. LibreChat sees all of them as MCP servers and the agent can call any tool.
+
+4. Gaps I need you to clarify before we start
+Before I write a single line of code, I need answers to these:
+A — Authentication model
+Will each employee log in individually to LibreChat with their own Microsoft corporate account (delegated/user OAuth), or is this a service account that acts on behalf of everyone (app-only)? This determines the entire auth flow. Delegated is more secure and is the enterprise standard; app-only is simpler but requires admin-granted broad permissions.
+B — Deployment target
+Is LibreChat already running in Docker on your VM, or do we need to set it up from scratch? And is the VM on the corporate internal network with direct internet access, or is outbound traffic proxied?
+C — AI model selection
+You have Requesty.AI access. Which model family do you want to use as the primary reasoning model? Options available via Requesty include Google Gemini 2.5 Pro, Meta Llama 4, Mistral Large, DeepSeek V3, and others. The choice affects cost, context window, and tool-calling reliability.
+D — Scope of Phase 1
+The blueprint lists 16+ capabilities. Do you want to build all tools in one go, or do you want a phased rollout (e.g. Phase 1: email read + summarise + MOM, Phase 2: calendar + scheduling, Phase 3: task extraction + follow-ups)?
+E — Multi-user vs single-user
+Is this platform for a single pilot user first, or immediately multi-user across the organisation? This directly affects how we handle token isolation in the MCP server layer (the known race-condition risk in Softeria’s HTTP mode).
+F — Entra ID app registration
+Do you already have an Azure App Registration (client ID, tenant ID, client secret) with Graph API permissions consented by an admin, or does that need to be created as part of this work?
+
+Once you answer these six questions, I am fully ready to receive your kick-start instruction and lay out a precise plan of action — module by module, file by file.​​​​​​​​​​​​​​​​
