@@ -1,0 +1,1111 @@
+# Phase 1 — Code Section 2
+
+**Project:** outlook-ai-agent-mcp
+**Covers:** `config/`, `auth/`, `graph/`, `llm/`
+**Status:** Code only — do not execute until all 3 sections are delivered and reviewed
+
+> Note on ordering: this section is presented in dependency order
+> (config → auth → graph → llm) rather than the order requested in
+> chat, because `auth/` and `graph/` both depend on `config/settings.py`
+> existing first, and `graph/` depends on `auth/`. Reading them in this
+> order will make the "why" of each file clearer. All four folders
+> you asked for are fully included below.
+
+---
+
+## 1. `config/` Folder
+
+This is the single place that reads `.env` and exposes clean, typed configuration to the rest of the application. No other file in the project ever calls `os.getenv()` directly.
+
+---
+
+### 1.1 `config/settings.py`
+
+```python
+"""
+settings.py
+===========
+Loads environment variables from .env and exposes them as a single,
+typed, organised configuration object used throughout the project.
+
+Why this file exists:
+    Without this file, every module would need to call os.getenv() or
+    load_dotenv() itself, and a typo in a variable name (e.g.
+    "AZURE_CLIENT_ID" vs "AZURE_CLIENTID") would fail silently somewhere
+    deep in the code. By centralising this in one place, a missing or
+    misspelled variable is caught immediately on startup, with a clear
+    error, rather than causing a mysterious failure later.
+
+Design notes:
+    - This module loads .env ONCE, when first imported, and the resulting
+      `settings` object is reused everywhere (Python caches module imports,
+      so this is efficient — .env is not re-read on every function call).
+    - Settings are grouped using a dataclass for readability and so that
+      your editor's autocomplete can suggest valid setting names.
+    - Required vs optional settings are clearly distinguished: required
+      settings raise an error immediately if missing, so problems are
+      caught at startup, not buried inside a tool call three layers deep.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+import os
+from dataclasses import dataclass, field
+from dotenv import load_dotenv
+
+# Step 1: Load the .env file into the process's environment variables.
+#         This must happen before we try to read any of them below.
+load_dotenv()
+
+
+# ---------------------------------------------------------------------------
+# Helper: required environment variable getter
+# ---------------------------------------------------------------------------
+def _get_required(var_name: str) -> str:
+    """
+    Read a required environment variable. Raises a clear error immediately
+    if it's missing, rather than letting the app start in a broken state.
+    """
+    value = os.getenv(var_name)
+    if not value:
+        raise EnvironmentError(
+            f"Missing required environment variable: '{var_name}'. "
+            f"Please check your .env file."
+        )
+    return value
+
+
+def _get_optional(var_name: str, default: str = "") -> str:
+    """
+    Read an optional environment variable, returning a default if not set.
+    Used for settings that have sensible fallbacks (e.g. log level).
+    """
+    return os.getenv(var_name, default)
+
+
+def _get_bool(var_name: str, default: bool = False) -> bool:
+    """
+    Read an environment variable as a boolean. .env files store everything
+    as strings, so "true"/"false" need explicit conversion.
+    """
+    value = os.getenv(var_name, str(default)).strip().lower()
+    return value in ("true", "1", "yes")
+
+
+def _get_int(var_name: str, default: int) -> int:
+    """
+    Read an environment variable as an integer, with a fallback default.
+    """
+    value = os.getenv(var_name)
+    if value is None or value == "":
+        return default
+    return int(value)
+
+
+# ---------------------------------------------------------------------------
+# Settings dataclass — organised by logical group
+# ---------------------------------------------------------------------------
+@dataclass
+class Settings:
+    """
+    A single object holding every configuration value the application
+    needs, grouped logically to match the .env file's sections.
+    """
+
+    # --- Azure / Entra ID ---
+    AZURE_CLIENT_ID: str = field(default_factory=lambda: _get_required("AZURE_CLIENT_ID"))
+    AZURE_CLIENT_SECRET: str = field(default_factory=lambda: _get_required("AZURE_CLIENT_SECRET"))
+    AZURE_TENANT_ID: str = field(default_factory=lambda: _get_required("AZURE_TENANT_ID"))
+    AZURE_AUTHORITY: str = field(default_factory=lambda: _get_required("AZURE_AUTHORITY"))
+
+    # --- Microsoft Graph API ---
+    GRAPH_API_BASE_URL: str = field(
+        default_factory=lambda: _get_optional(
+            "GRAPH_API_BASE_URL", "https://graph.microsoft.com/v1.0"
+        )
+    )
+    GRAPH_API_SCOPES: str = field(
+        default_factory=lambda: _get_optional(
+            "GRAPH_API_SCOPES", "Mail.Read,Calendars.Read,User.Read"
+        )
+    )
+
+    # --- Requesty.AI ---
+    REQUESTY_API_KEY: str = field(default_factory=lambda: _get_required("REQUESTY_API_KEY"))
+    REQUESTY_BASE_URL: str = field(
+        default_factory=lambda: _get_optional(
+            "REQUESTY_BASE_URL", "https://router.requesty.ai/v1"
+        )
+    )
+    REQUESTY_PRIMARY_MODEL: str = field(
+        default_factory=lambda: _get_optional(
+            "REQUESTY_PRIMARY_MODEL", "azure/gpt-4.1-nano@swedencentral"
+        )
+    )
+    REQUESTY_FALLBACK_MODEL: str = field(
+        default_factory=lambda: _get_optional(
+            "REQUESTY_FALLBACK_MODEL", "mistral/mistral-small-2603"
+        )
+    )
+
+    # --- FastMCP server ---
+    MCP_HOST: str = field(default_factory=lambda: _get_optional("MCP_HOST", "0.0.0.0"))
+    MCP_PORT: int = field(default_factory=lambda: _get_int("MCP_PORT", 8000))
+    MCP_SERVER_NAME: str = field(
+        default_factory=lambda: _get_optional("MCP_SERVER_NAME", "outlook-ai-agent-mcp")
+    )
+    MCP_TRANSPORT: str = field(
+        default_factory=lambda: _get_optional("MCP_TRANSPORT", "streamable-http")
+    )
+
+    # --- LibreChat ---
+    LIBRECHAT_DOMAIN: str = field(default_factory=lambda: _get_optional("LIBRECHAT_DOMAIN"))
+
+    # --- Attachment processing ---
+    MAX_ATTACHMENT_SIZE_MB: int = field(
+        default_factory=lambda: _get_int("MAX_ATTACHMENT_SIZE_MB", 25)
+    )
+    ATTACHMENT_TEMP_DIR: str = field(
+        default_factory=lambda: _get_optional("ATTACHMENT_TEMP_DIR", "./temp_attachments")
+    )
+    OCR_ENABLED: bool = field(default_factory=lambda: _get_bool("OCR_ENABLED", False))
+    TESSERACT_CMD_PATH: str = field(
+        default_factory=lambda: _get_optional("TESSERACT_CMD_PATH", "")
+    )
+
+    # --- Logging ---
+    LOG_LEVEL: str = field(default_factory=lambda: _get_optional("LOG_LEVEL", "INFO"))
+
+    def graph_scopes_list(self) -> list[str]:
+        """
+        Convert the comma-separated GRAPH_API_SCOPES string into a clean
+        Python list, since MSAL expects scopes as a list, not a string.
+        """
+        return [scope.strip() for scope in self.GRAPH_API_SCOPES.split(",") if scope.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
+# This is the object every other file in the project imports:
+#     from config.settings import settings
+# It's created once, here, when this module is first imported.
+settings = Settings()
+```
+
+---
+
+## 2. `auth/` Folder
+
+Everything related to identity and tokens lives here. This folder enforces the delegated-auth model we agreed on: the OAuth token always belongs to the logged-in user (you), is passed in fresh on every request from LibreChat, and is never written to disk.
+
+---
+
+### 2.1 `auth/token_cache.py`
+
+```python
+"""
+token_cache.py
+===============
+Provides request-scoped access to the OAuth access token sent by
+LibreChat with each MCP tool call. "Request-scoped" means the token
+lives only for the duration of handling one incoming request — nothing
+is persisted to disk or kept around between requests.
+
+Why this file exists:
+    FastMCP tool functions need access to "the current user's token"
+    without every single tool file having to know HOW that token arrives
+    (i.e. which HTTP header it's in). This file is the one place that
+    knows that detail.
+
+Design notes:
+    - FastMCP provides a get_http_headers() dependency that exposes the
+      raw HTTP headers of the current incoming request. We read the
+      Authorization header from there.
+    - This file does NOT validate or decode the token — that is
+      graph_auth.py's job. This file's only responsibility is "find and
+      return the raw token string."
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from fastmcp.server.dependencies import get_http_headers
+from fastmcp.exceptions import AuthorizationError
+
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Function: get_current_user_token
+# ---------------------------------------------------------------------------
+def get_current_user_token() -> str:
+    """
+    Retrieve the OAuth access token for the user making the current
+    request, as sent by LibreChat in the Authorization header.
+
+    Returns:
+        str: The raw bearer token string (without the "Bearer " prefix).
+
+    Raises:
+        AuthorizationError: If no Authorization header is present, or it
+                             isn't in the expected "Bearer <token>" format.
+                             This is a FastMCP-recognised exception type,
+                             which FastMCP will translate into a proper
+                             401-style response back to LibreChat.
+    """
+    # Step 1: Get all headers for the current in-flight request. FastMCP
+    #         makes this available via a context-aware dependency function
+    #         — it automatically knows which request is "current" even
+    #         though multiple users could theoretically be calling at once.
+    headers = get_http_headers()
+
+    # Step 2: Look for the standard Authorization header. HTTP headers
+    #         are case-insensitive, but we check the conventional casing
+    #         first and fall back to lowercase, since proxies sometimes
+    #         normalise header casing.
+    auth_header = headers.get("Authorization") or headers.get("authorization")
+
+    if not auth_header:
+        logger.warning("No Authorization header found in incoming request")
+        raise AuthorizationError(
+            "No authentication token provided. Please authenticate "
+            "via LibreChat's MCP connection settings."
+        )
+
+    # Step 3: The header should be in the format "Bearer <token>".
+    #         Split it and validate the format before returning just
+    #         the token portion.
+    parts = auth_header.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        logger.warning("Authorization header is not in 'Bearer <token>' format")
+        raise AuthorizationError(
+            "Authentication token is malformed. Please re-authenticate "
+            "via LibreChat."
+        )
+
+    token = parts[1].strip()
+
+    if not token:
+        raise AuthorizationError("Authentication token is empty.")
+
+    return token
+```
+
+---
+
+### 2.2 `auth/graph_auth.py`
+
+```python
+"""
+graph_auth.py
+=============
+Validates and prepares the OAuth access token for use with Microsoft
+Graph API calls.
+
+Why this file exists:
+    token_cache.py knows HOW to find the raw token string from the
+    incoming request. This file knows what to DO with that token once
+    found — confirming it's well-formed enough to use, and packaging it
+    in the shape the Microsoft Graph SDK expects.
+
+Design notes:
+    - This project uses DELEGATED auth, meaning the token already
+      represents a specific logged-in user (you) — it was obtained by
+      LibreChat during the OAuth login flow, not generated by this
+      server. This file never requests new tokens or stores credentials;
+      it only validates and forwards what it's given.
+    - The msgraph-sdk-python library expects an "credential" object
+      implementing a specific interface, not just a raw string. This
+      file provides a minimal adapter class to bridge that gap.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from azure.core.credentials import AccessToken
+import time
+
+from auth.token_cache import get_current_user_token
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Class: DelegatedTokenCredential
+# ---------------------------------------------------------------------------
+class DelegatedTokenCredential:
+    """
+    A minimal adapter that wraps a raw OAuth access token string so it
+    satisfies the credential interface the Microsoft Graph SDK expects
+    (specifically, Azure's TokenCredential protocol, which requires a
+    get_token() method).
+
+    Why this class is needed:
+        The official msgraph-sdk-python library is designed to work with
+        Azure's credential objects (like InteractiveBrowserCredential or
+        ClientSecretCredential), which normally fetch their own tokens.
+        In our case, LibreChat has ALREADY obtained the token via the
+        OAuth flow — we just need to hand it to the SDK in the expected
+        shape, without the SDK trying to fetch a new one itself.
+    """
+
+    def __init__(self, raw_token: str):
+        # Step 1: Store the raw token string passed in from token_cache.py.
+        self._raw_token = raw_token
+
+    def get_token(self, *scopes, **kwargs) -> AccessToken:
+        """
+        Required method for Azure's TokenCredential interface. The Graph
+        SDK calls this internally whenever it needs to attach a token to
+        an outgoing request.
+
+        Returns:
+            AccessToken: An Azure SDK object pairing the token string
+                         with an expiry timestamp.
+        """
+        # Step 2: We don't have the actual expiry time of this token
+        #         (LibreChat manages refresh on its side), so we report
+        #         a short artificial expiry. This just tells the Graph
+        #         SDK "treat this as valid for this one call" — it does
+        #         not affect the token's real expiry on Microsoft's side.
+        artificial_expiry = int(time.time()) + 300  # 5 minutes from now
+
+        return AccessToken(self._raw_token, artificial_expiry)
+
+
+# ---------------------------------------------------------------------------
+# Function: get_graph_credential
+# ---------------------------------------------------------------------------
+def get_graph_credential() -> DelegatedTokenCredential:
+    """
+    Build a Graph-SDK-compatible credential object for the current
+    request, using the logged-in user's OAuth token.
+
+    This is the main entry point other files (graph_client_factory.py)
+    call to get something they can hand directly to the Graph SDK client
+    constructor.
+
+    Returns:
+        DelegatedTokenCredential: Ready to pass into the Graph SDK client.
+    """
+    # Step 1: Get the raw token string for whoever is making this request.
+    #         This will raise AuthorizationError if missing/malformed —
+    #         we deliberately let that propagate up, since a tool call
+    #         genuinely cannot proceed without a valid token.
+    raw_token = get_current_user_token()
+
+    logger.debug("Built delegated Graph credential for current request")
+
+    # Step 2: Wrap it in our adapter class and return.
+    return DelegatedTokenCredential(raw_token)
+```
+
+---
+
+## 3. `graph/` Folder
+
+Every network call to Microsoft Graph happens through this folder, and nowhere else in the project. This means if a Graph API detail changes, there is exactly one place to fix it.
+
+---
+
+### 3.1 `graph/graph_client_factory.py`
+
+```python
+"""
+graph_client_factory.py
+=========================
+Builds a ready-to-use, authenticated Microsoft Graph SDK client for the
+current request, and also provides a couple of simple top-level Graph
+calls (like fetching the user's own profile) that don't belong in any
+more specific client file.
+
+Why this file exists:
+    Every file in graph/ (mail_client.py, calendar_client.py,
+    attachment_client.py) needs an authenticated Graph client to work
+    with. Rather than each file building its own, they all call this
+    factory function — avoiding duplicated connential-wiring logic.
+
+Design notes:
+    - A NEW client is built on every call, scoped to the current request's
+      token. This is intentional and correct for a multi-user-capable
+      design: we never want to accidentally reuse one user's authenticated
+      client for another user's request.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from msgraph import GraphServiceClient
+
+from auth.graph_auth import get_graph_credential
+from config.settings import settings
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Function: build_graph_client
+# ---------------------------------------------------------------------------
+def build_graph_client() -> GraphServiceClient:
+    """
+    Construct a Microsoft Graph SDK client authenticated for the current
+    request's user, using their delegated OAuth token.
+
+    Returns:
+        GraphServiceClient: The official SDK client object, ready to use
+                             for any Graph API call (e.g. client.me.get()).
+    """
+    # Step 1: Get the credential adapter wrapping this request's token.
+    credential = get_graph_credential()
+
+    # Step 2: Build the SDK client, telling it which permission scopes
+    #         it's allowed to request (matches what's already been
+    #         consented in the Azure App Registration).
+    client = GraphServiceClient(
+        credentials=credential,
+        scopes=settings.graph_scopes_list(),
+    )
+
+    return client
+
+
+# ---------------------------------------------------------------------------
+# Function: get_user_profile
+# ---------------------------------------------------------------------------
+async def get_user_profile() -> dict:
+    """
+    Fetch the current user's basic profile from Microsoft Graph
+    (GET /me). Used by tools/profile_tools.py.
+
+    Returns:
+        dict: The raw Graph API user object, converted to a plain dict
+              so calling code doesn't need to know about SDK-specific
+              object types.
+    """
+    logger.debug("Calling Graph API: GET /me")
+
+    # Step 1: Build an authenticated client for this request.
+    client = build_graph_client()
+
+    # Step 2: Call the SDK's "me" endpoint. The Graph SDK is built so
+    #         that client.me.get() maps directly to GET /me.
+    user = await client.me.get()
+
+    # Step 3: The SDK returns a typed User object, not a plain dict.
+    #         We convert the fields we care about into a plain dict here
+    #         so the rest of the app never needs to import SDK model types.
+    return {
+        "displayName": user.display_name,
+        "mail": user.mail,
+        "userPrincipalName": user.user_principal_name,
+        "jobTitle": user.job_title,
+    }
+```
+
+---
+
+### 3.2 `graph/mail_client.py`
+
+```python
+"""
+mail_client.py
+==============
+Contains every Graph API function related to reading and searching
+Outlook email. This file knows about Graph's mail endpoints and nothing
+else — it has no knowledge of MCP tools, the LLM, or attachment parsing.
+
+Why this file exists:
+    tools/email_tools.py and tools/attachment_tools.py both need to fetch
+    email data. Rather than each tool file calling the Graph SDK directly
+    (which would duplicate connection logic and make future Graph API
+    changes painful to track down), they all call through this one file.
+
+Design notes:
+    - Functions here return raw-ish dictionaries built from the SDK's
+      typed objects — NOT the typed SDK objects themselves. This keeps
+      tools/ files decoupled from SDK internals.
+    - top=N parameters map directly to Graph API's $top OData query
+      parameter, which limits how many results come back.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from graph.graph_client_factory import build_graph_client
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helper: convert a Graph SDK Message object into a plain dict
+# ---------------------------------------------------------------------------
+def _message_to_dict(message) -> dict:
+    """
+    Convert a single Graph SDK Message object into a plain Python dict
+    with the fields this project actually uses. Keeping this conversion
+    in one helper avoids repeating the same field-mapping logic in every
+    function below.
+    """
+    return {
+        "id": message.id,
+        "subject": message.subject,
+        "from": {
+            "emailAddress": {
+                "name": message.from_.email_address.name if message.from_ else None,
+                "address": message.from_.email_address.address if message.from_ else None,
+            }
+        },
+        "receivedDateTime": (
+            message.received_date_time.isoformat() if message.received_date_time else None
+        ),
+        "hasAttachments": message.has_attachments,
+        "bodyPreview": message.body_preview or "",
+        "body": {
+            "content": message.body.content if message.body else "",
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Function: fetch_recent_messages
+# ---------------------------------------------------------------------------
+async def fetch_recent_messages(top: int = 10) -> list[dict]:
+    """
+    Fetch the most recent messages from the user's inbox, ordered by
+    received date (newest first).
+
+    Args:
+        top (int): Maximum number of messages to fetch.
+
+    Returns:
+        list[dict]: A list of message dictionaries (see _message_to_dict).
+    """
+    logger.debug(f"Calling Graph API: GET /me/messages (top={top})")
+
+    client = build_graph_client()
+
+    # Step 1: The Graph SDK uses a request-configuration pattern for
+    #         query parameters like $top and $orderby, rather than plain
+    #         keyword arguments. This builds that configuration object.
+    from msgraph.generated.users.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+
+    request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+        query_parameters=MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            top=top,
+            orderby=["receivedDateTime DESC"],
+        )
+    )
+
+    # Step 2: Call GET /me/messages with that configuration.
+    response = await client.me.messages.get(request_configuration=request_config)
+
+    # Step 3: response.value holds the actual list of Message objects.
+    #         Convert each one to our plain-dict shape before returning.
+    messages = response.value if response and response.value else []
+    return [_message_to_dict(msg) for msg in messages]
+
+
+# ---------------------------------------------------------------------------
+# Function: fetch_message_by_id
+# ---------------------------------------------------------------------------
+async def fetch_message_by_id(message_id: str) -> dict:
+    """
+    Fetch a single email message's full content by its Graph API ID.
+
+    Args:
+        message_id (str): The unique Graph API ID of the message.
+
+    Returns:
+        dict: The message dictionary (see _message_to_dict), including
+              full body content (not just a preview).
+    """
+    logger.debug(f"Calling Graph API: GET /me/messages/{message_id}")
+
+    client = build_graph_client()
+
+    # Step 1: Call GET /me/messages/{id}. The SDK's by_message_id()
+    #         method builds the correct URL path automatically.
+    message = await client.me.messages.by_message_id(message_id).get()
+
+    return _message_to_dict(message)
+
+
+# ---------------------------------------------------------------------------
+# Function: search_messages_by_keyword
+# ---------------------------------------------------------------------------
+async def search_messages_by_keyword(keyword: str, top: int = 10) -> list[dict]:
+    """
+    Search the user's mailbox for messages matching a keyword, using
+    Graph API's built-in $search capability.
+
+    Args:
+        keyword (str): The search term.
+        top (int): Maximum number of matching messages to return.
+
+    Returns:
+        list[dict]: A list of matching message dictionaries.
+    """
+    logger.debug(f"Calling Graph API: GET /me/messages?$search='{keyword}' (top={top})")
+
+    client = build_graph_client()
+
+    from msgraph.generated.users.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+
+    # Step 1: Graph API's $search parameter requires the search term to
+    #         be wrapped in quotes within the query string itself.
+    request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+        query_parameters=MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            search=f'"{keyword}"',
+            top=top,
+        ),
+        # Step 2: Graph API requires this header whenever $search is
+        #         used, since search results aren't ordered in the
+        #         normal way and the API needs to know the caller
+        #         understands that ("eventual consistency" behaviour).
+        headers={"ConsistencyLevel": "eventual"},
+    )
+
+    response = await client.me.messages.get(request_configuration=request_config)
+
+    messages = response.value if response and response.value else []
+    return [_message_to_dict(msg) for msg in messages]
+```
+
+---
+
+### 3.3 `graph/calendar_client.py`
+
+```python
+"""
+calendar_client.py
+===================
+Contains Graph API functions related to reading calendar events.
+Phase 1 scope is read-only — fetching the calendarView within a date
+range. Creating or modifying events is deferred to Phase 2 (requires
+Calendars.ReadWrite, which is not yet granted).
+
+Why this file exists:
+    Same pattern as mail_client.py: isolates all calendar-related Graph
+    API calls in one place, so tools/calendar_tools.py never talks to
+    the Graph SDK directly.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from datetime import datetime
+
+from graph.graph_client_factory import build_graph_client
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Function: fetch_calendar_events
+# ---------------------------------------------------------------------------
+async def fetch_calendar_events(start_dt: datetime, end_dt: datetime) -> list[dict]:
+    """
+    Fetch the user's calendar events within a given date/time range,
+    using Graph API's calendarView endpoint (which correctly expands
+    recurring meetings into individual occurrences, unlike the plain
+    /events endpoint).
+
+    Args:
+        start_dt (datetime): Start of the date range to query.
+        end_dt (datetime): End of the date range to query.
+
+    Returns:
+        list[dict]: A list of event dictionaries with subject, start/end
+                    times, organiser, location, and online-meeting flag.
+    """
+    logger.debug(
+        f"Calling Graph API: GET /me/calendarView "
+        f"(start={start_dt.isoformat()}, end={end_dt.isoformat()})"
+    )
+
+    client = build_graph_client()
+
+    from msgraph.generated.users.item.calendar_view.calendar_view_request_builder import (
+        CalendarViewRequestBuilder,
+    )
+
+    # Step 1: calendarView requires startDateTime and endDateTime as
+    #         query parameters (this is different from a request body —
+    #         it's how Graph API expects the range to be specified for
+    #         this specific endpoint).
+    request_config = CalendarViewRequestBuilder.CalendarViewRequestBuilderGetRequestConfiguration(
+        query_parameters=CalendarViewRequestBuilder.CalendarViewRequestBuilderGetQueryParameters(
+            start_date_time=start_dt.isoformat(),
+            end_date_time=end_dt.isoformat(),
+            orderby=["start/dateTime"],
+        )
+    )
+
+    response = await client.me.calendar_view.get(request_configuration=request_config)
+
+    events = response.value if response and response.value else []
+
+    # Step 2: Convert each SDK Event object into a plain dict, matching
+    #         the shape tools/calendar_tools.py expects.
+    result = []
+    for event in events:
+        result.append({
+            "subject": event.subject,
+            "start": {"dateTime": event.start.date_time if event.start else None},
+            "end": {"dateTime": event.end.date_time if event.end else None},
+            "organizer": {
+                "emailAddress": {
+                    "name": (
+                        event.organizer.email_address.name
+                        if event.organizer and event.organizer.email_address
+                        else None
+                    )
+                }
+            },
+            "location": {
+                "displayName": event.location.display_name if event.location else ""
+            },
+            "isOnlineMeeting": event.is_online_meeting or False,
+        })
+
+    return result
+```
+
+---
+
+### 3.4 `graph/attachment_client.py`
+
+```python
+"""
+attachment_client.py
+======================
+Contains Graph API functions for listing and downloading email
+attachments. This file's job is strictly "get the file" — it does NOT
+read or parse the file's content. That responsibility belongs to
+parsers/parser_router.py.
+
+Why this file exists:
+    Keeping "download the attachment" separate from "understand the
+    attachment's content" means parsers/ can be tested completely
+    independently (e.g. with a sample PDF from disk) without needing a
+    live mailbox connection at all.
+
+Design notes:
+    - Graph API attachments come back as base64-encoded content embedded
+      in JSON for small files. The SDK handles this decoding for us, but
+      we still need to check the attachment type to know we're dealing
+      with a fileAttachment (as opposed to an itemAttachment, e.g. a
+      forwarded email, which Phase 1 does not support).
+    - A size guard (MAX_ATTACHMENT_SIZE_MB) prevents accidentally trying
+      to download and process an enormous file that could slow down or
+      crash the parsing step.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+import base64
+
+from graph.graph_client_factory import build_graph_client
+from config.settings import settings
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Function: list_message_attachments
+# ---------------------------------------------------------------------------
+async def list_message_attachments(message_id: str) -> list[dict]:
+    """
+    List all attachments on a specific email message, without
+    downloading their actual content (metadata only — fast operation).
+
+    Args:
+        message_id (str): The unique Graph API ID of the parent email.
+
+    Returns:
+        list[dict]: A list of attachment metadata dictionaries (id, name,
+                    contentType, size).
+    """
+    logger.debug(f"Calling Graph API: GET /me/messages/{message_id}/attachments")
+
+    client = build_graph_client()
+
+    response = await client.me.messages.by_message_id(message_id).attachments.get()
+
+    attachments = response.value if response and response.value else []
+
+    result = []
+    for att in attachments:
+        result.append({
+            "id": att.id,
+            "name": att.name,
+            "contentType": att.content_type,
+            "size": att.size,
+        })
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Function: download_attachment
+# ---------------------------------------------------------------------------
+async def download_attachment(message_id: str, attachment_id: str) -> tuple[bytes, str, str]:
+    """
+    Download the raw binary content of a specific email attachment.
+
+    Args:
+        message_id (str): The unique Graph API ID of the parent email.
+        attachment_id (str): The unique ID of the attachment to download.
+
+    Returns:
+        tuple[bytes, str, str]: (file_bytes, file_name, content_type)
+            - file_bytes: The raw decoded binary content of the file.
+            - file_name: The original file name (e.g. "CV.pdf").
+            - content_type: The MIME type reported by Graph API.
+
+    Raises:
+        ValueError: If the attachment exceeds MAX_ATTACHMENT_SIZE_MB,
+                    or if it's not a simple file attachment (e.g. it's
+                    an embedded email, which Phase 1 doesn't support).
+    """
+    logger.debug(
+        f"Calling Graph API: GET /me/messages/{message_id}/attachments/{attachment_id}"
+    )
+
+    client = build_graph_client()
+
+    # Step 1: Fetch the attachment object. For small-to-medium files,
+    #         Graph API includes the base64-encoded content directly in
+    #         this response (this is the "fileAttachment" type).
+    attachment = await (
+        client.me.messages.by_message_id(message_id)
+        .attachments.by_attachment_id(attachment_id)
+        .get()
+    )
+
+    # Step 2: Enforce our configured size limit BEFORE attempting to
+    #         decode/process the content, to fail fast on oversized files.
+    size_mb = (attachment.size or 0) / (1024 * 1024)
+    if size_mb > settings.MAX_ATTACHMENT_SIZE_MB:
+        raise ValueError(
+            f"Attachment '{attachment.name}' is {size_mb:.1f}MB, which "
+            f"exceeds the configured limit of "
+            f"{settings.MAX_ATTACHMENT_SIZE_MB}MB."
+        )
+
+    # Step 3: Confirm this is a fileAttachment (has content_bytes) rather
+    #         than an itemAttachment (e.g. a forwarded email/contact),
+    #         which Phase 1 does not handle.
+    content_bytes_b64 = getattr(attachment, "content_bytes", None)
+
+    if content_bytes_b64 is None:
+        raise ValueError(
+            f"Attachment '{attachment.name}' is not a standard file "
+            f"attachment (it may be an embedded email or contact card), "
+            f"which isn't supported yet."
+        )
+
+    # Step 4: The SDK may already hand us decoded bytes, or a base64
+    #         string, depending on the SDK version's typing. We check
+    #         and decode defensively to handle either case correctly.
+    if isinstance(content_bytes_b64, bytes):
+        file_bytes = content_bytes_b64
+    else:
+        file_bytes = base64.b64decode(content_bytes_b64)
+
+    return file_bytes, attachment.name, attachment.content_type
+```
+
+---
+
+## 4. `llm/` Folder
+
+Every call to the Requesty.AI gateway is isolated here. The day Requesty is replaced by native Azure OpenAI or Gemini, this is the only folder that needs to change.
+
+---
+
+### 4.1 `llm/requesty_client.py`
+
+```python
+"""
+requesty_client.py
+====================
+A thin wrapper around calls to the Requesty.AI LLM gateway. This file
+implements primary/fallback model logic: tries the primary model first
+(Azure GPT-4.1-nano), and automatically retries with the fallback model
+(Mistral-small) if the primary call fails.
+
+Why this file exists:
+    Every tool that needs AI text generation (summarise_email,
+    summarise_attachment) calls this ONE function, rather than each tool
+    building its own HTTP request to Requesty. This is also the file
+    that makes the "swap LLM provider later" requirement realistic:
+    since Requesty.AI exposes an OpenAI-compatible API, this wrapper is
+    intentionally written in a way that would need only the base_url and
+    model names changed to point at a different provider in future.
+
+Design notes:
+    - Uses httpx for the actual HTTP call (already a dependency via
+      msgraph-sdk, and a clean async-friendly client).
+    - Errors from the primary model trigger ONE fallback attempt, not an
+      infinite retry loop — if both fail, the error is raised clearly
+      rather than silently returning an empty string.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+import httpx
+
+from config.settings import settings
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Reasonable timeout for LLM calls — long enough for a summary response,
+# short enough that a hung request doesn't block a tool call forever.
+REQUEST_TIMEOUT_SECONDS = 30.0
+
+
+# ---------------------------------------------------------------------------
+# Internal helper: make one call to Requesty.AI with a specific model
+# ---------------------------------------------------------------------------
+async def _call_requesty(prompt: str, model_name: str) -> str:
+    """
+    Make a single chat-completion call to Requesty.AI using the given
+    model name.
+
+    Args:
+        prompt (str): The full prompt text to send to the model.
+        model_name (str): The Requesty.AI model identifier
+                          (e.g. "azure/gpt-4.1-nano@swedencentral").
+
+    Returns:
+        str: The model's generated text response.
+
+    Raises:
+        httpx.HTTPStatusError: If Requesty.AI returns a non-2xx response.
+        Exception: For network errors, timeouts, or unexpected response
+                   shapes.
+    """
+    # Step 1: Requesty.AI exposes an OpenAI-compatible /chat/completions
+    #         endpoint, so the request shape follows that standard format.
+    url = f"{settings.REQUESTY_BASE_URL}/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {settings.REQUESTY_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        # Step 2: A moderate max_tokens keeps summaries concise and
+        #         responses fast — this isn't meant for long-form generation.
+        "max_tokens": 500,
+        "temperature": 0.3,  # Lower temperature = more focused, factual summaries
+    }
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.post(url, headers=headers, json=payload)
+
+        # Step 3: Raise an exception for any non-success HTTP status,
+        #         so the caller's try/except can detect and react to it.
+        response.raise_for_status()
+
+        data = response.json()
+
+    # Step 4: Extract the generated text from the OpenAI-compatible
+    #         response shape: { "choices": [ { "message": { "content": ... } } ] }
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError(
+            f"Unexpected response shape from Requesty.AI: {data}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Public function: generate_summary
+# ---------------------------------------------------------------------------
+async def generate_summary(prompt: str) -> str:
+    """
+    Generate a text completion (e.g. a summary) using the configured
+    primary model, automatically falling back to the secondary model
+    if the primary call fails.
+
+    Args:
+        prompt (str): The full prompt to send to the LLM.
+
+    Returns:
+        str: The generated text.
+
+    Raises:
+        Exception: If BOTH the primary and fallback model calls fail.
+                  The caller (a tool function) is expected to catch this
+                  and convert it into a safe error message via
+                  utils/error_handler.py.
+    """
+    # Step 1: Try the primary model first (Azure GPT-4.1-nano).
+    try:
+        logger.debug(f"Calling Requesty.AI primary model: {settings.REQUESTY_PRIMARY_MODEL}")
+        return await _call_requesty(prompt, settings.REQUESTY_PRIMARY_MODEL)
+
+    except Exception as primary_exc:
+        # Step 2: Log the primary failure clearly, then attempt the
+        #         fallback model exactly once. We don't want a silent
+        #         failure — visibility here matters for debugging which
+        #         model is actually being used in practice.
+        logger.warning(
+            f"Primary model '{settings.REQUESTY_PRIMARY_MODEL}' failed: "
+            f"{primary_exc}. Trying fallback model "
+            f"'{settings.REQUESTY_FALLBACK_MODEL}'."
+        )
+
+        try:
+            return await _call_requesty(prompt, settings.REQUESTY_FALLBACK_MODEL)
+
+        except Exception as fallback_exc:
+            # Step 3: Both models failed. Raise a clear combined error —
+            #         this will be caught by the tool function's
+            #         try/except and converted to a safe user-facing message.
+            logger.error(
+                f"Fallback model '{settings.REQUESTY_FALLBACK_MODEL}' also "
+                f"failed: {fallback_exc}"
+            )
+            raise Exception(
+                f"Both primary and fallback LLM models failed. "
+                f"Primary error: {primary_exc}. "
+                f"Fallback error: {fallback_exc}."
+            ) from fallback_exc
+```
+
+---
+
+## Dependency Note for Section 3
+
+`graph/attachment_client.py` and `graph/graph_client_factory.py` reference `config.settings` (done — defined above) and `auth.graph_auth` (done — defined above).
+
+Still pending in **Section 3**: `utils/logger.py` (used by every file in this section), `utils/error_handler.py` (used by tools/ from Section 1), and `utils/date_utils.py` (used by `tools/calendar_tools.py` from Section 1, specifically the `parse_relative_date_range` function). `server.py` — which creates the `mcp` object that every `tools/` file in Section 1 imports — is also still pending.
+
+One additional dependency to flag now: `azure.core.credentials` (used in `auth/graph_auth.py` above) is a transitive dependency that comes bundled with `msgraph-sdk`, so no separate `pip install` line is needed for it — `requirements.txt` from Section 1 already covers it.
+
+---
+
+*End of Section 2. Next: Section 3 covers `utils/`, `tests/`, `temp_attachments/`, and `server.py` — after which the full picture connects and you can install dependencies and run a first local test.*
