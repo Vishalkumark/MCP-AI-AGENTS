@@ -1,0 +1,20 @@
+def make_minimal_pdf_bytes(text: str = "Hello from PDF") -> bytes:
+    """
+    Create a minimal valid PDF in memory containing the given text,
+    using PyMuPDF itself. Returns raw bytes.
+    """
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((50, 50), text)
+
+    # Save to bytes first
+    pdf_bytes = doc.tobytes()
+    doc.close()
+
+    # Re-open from bytes so the text layer is fully committed
+    # and extractable by get_text() — required in PyMuPDF 1.24+
+    doc2 = fitz.open(stream=pdf_bytes, filetype="pdf")
+    final_bytes = doc2.tobytes()
+    doc2.close()
+
+    return final_bytes
