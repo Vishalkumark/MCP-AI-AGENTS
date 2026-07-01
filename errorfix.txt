@@ -18,3 +18,31 @@ def make_minimal_pdf_bytes(text: str = "Hello from PDF") -> bytes:
     doc2.close()
 
     return final_bytes
+
+
+
+    if file_name_lower.endswith(".pdf"):
+        result = extract_text_from_pdf(file_bytes)
+
+        # Only attempt OCR if there is genuinely no text AND OCR is
+        # enabled. If OCR is disabled, return whatever text was found
+        # (even if minimal) rather than returning empty string.
+        if not result["has_extractable_text"] and result["text"].strip() == "":
+            from config.settings import settings
+            if settings.OCR_ENABLED:
+                logger.info(f"'{file_name}' has no extractable text — attempting OCR")
+                ocr_result = extract_text_via_ocr(file_bytes)
+                return {
+                    "text": ocr_result["text"],
+                    "file_type": "pdf",
+                    "used_ocr": ocr_result["ocr_succeeded"],
+                }
+            else:
+                logger.info(f"'{file_name}' text extraction minimal, OCR disabled — returning as-is")
+
+        return {
+            "text": result["text"],
+            "file_type": "pdf",
+            "used_ocr": False,
+        }
+
