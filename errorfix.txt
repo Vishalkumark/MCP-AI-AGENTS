@@ -46,3 +46,27 @@ def make_minimal_pdf_bytes(text: str = "Hello from PDF") -> bytes:
             "used_ocr": False,
         }
 
+
+---
+
+python -c "
+import msal
+from config.settings import settings
+
+app = msal.ConfidentialClientApplication(
+    settings.AZURE_CLIENT_ID,
+    authority=settings.AZURE_AUTHORITY,
+    client_credential=settings.AZURE_CLIENT_SECRET
+)
+
+result = app.acquire_token_for_client(
+    scopes=['https://graph.microsoft.com/.default']
+)
+
+if 'access_token' in result:
+    print('SUCCESS — your token:')
+    print(result['access_token'])
+else:
+    print('FAILED:', result.get('error_description'))
+"
+
