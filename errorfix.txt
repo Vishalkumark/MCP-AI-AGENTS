@@ -736,3 +736,18 @@ async with httpx.AsyncClient(timeout=60) as mcp_client:
 
 if **name** == “**main**”:
 asyncio.run(agent_loop())
+
+
+            # ── Print the final answer ────────────────────────────
+            print(f"\nAgent:\n{final_answer}\n")
+            print("="*55)
+
+            # Save output to file regardless of terminal display
+            output_file = Path("agent_output.txt")
+            with open(output_file, "a", encoding="utf-8") as f:
+                f.write(f"\n{'='*55}\n")
+                f.write(f"YOU: {user_input}\n")
+                f.write(f"{'='*55}\n")
+                f.write(f"AGENT:\n{final_answer}\n")
+                f.write(f"{'='*55}\n")
+            print(f"[Output also saved to agent_output.txt]")
