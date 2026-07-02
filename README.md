@@ -1509,3 +1509,102 @@ if __name__ == "__main__":
 
     return token
 
+---
+
+            # Add user message to history
+            messages.append({"role": "user", "content": user_input})
+            print("\nAgent thinking...\n")
+            print("STEP 1: Calling LLM...")
+            sys.stdout.flush()
+
+            # Round 1: Ask LLM what to do
+            llm_response = await call_llm(messages, allow_tools=True)
+            print("STEP 2: LLM responded")
+            sys.stdout.flush()
+
+            assistant_message = llm_response["choices"][0]["message"]
+            messages.append(assistant_message)
+
+            has_tool_calls = bool(assistant_message.get("tool_calls"))
+            print(f"STEP 3: Has tool calls = {has_tool_calls}")
+            sys.stdout.flush()
+
+            max_tool_rounds = 5
+            tool_round = 0
+
+            while assistant_message.get("tool_calls") and tool_round < max_tool_rounds:
+                tool_round += 1
+                print(f"STEP 4: Tool round {tool_round}")
+                sys.stdout.flush()
+
+                for tool_call in assistant_message["tool_calls"]:
+                    tool_name = tool_call["function"]["name"]
+                    arguments = json.loads(tool_call["function"]["arguments"])
+                    print(f"STEP 5: Calling tool {tool_name} with {arguments}")
+                    sys.stdout.flush()
+
+                    tool_result_raw = await mcp_call_tool(
+                        mcp_client, token, session_id, tool_name, arguments
+                    )
+
+                    print(f"STEP 6: Tool result length = {len(tool_result_raw)}")
+                    print(f"STEP 6: Tool result preview = {tool_result_raw[:200]}")
+                    sys.stdout.flush()
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": tool_result_raw,
+                    })
+
+                print("STEP 7: Calling LLM again with tool results...")
+                sys.stdout.flush()
+
+                llm_response = await call_llm(messages, allow_tools=True)
+                assistant_message = llm_response["choices"][0]["message"]
+                messages.append(assistant_message)
+
+                print(f"STEP 8: LLM responded, has_tool_calls = {bool(assistant_message.get('tool_calls'))}")
+                print(f"STEP 8: content = '{assistant_message.get('content', '')[:200]}'")
+                sys.stdout.flush()
+
+            final_answer = assistant_message.get("content", "")
+            print(f"STEP 9: final_answer = '{final_answer[:200]}'")
+            sys.stdout.flush()
+
+            if not final_answer or not final_answer.strip():
+                print("STEP 10: Forcing final text response...")
+                sys.stdout.flush()
+
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Based on the tool results above, please provide "
+                        "a clear and well-formatted answer to my original "
+                        "question. Do not call any more tools."
+                    )
+                })
+                forced_response = await call_llm(messages, allow_tools=False)
+                forced_message = forced_response["choices"][0]["message"]
+                final_answer = forced_message.get("content", "No response generated.")
+                messages.append(forced_message)
+                print(f"STEP 11: forced final_answer = '{final_answer[:200]}'")
+                sys.stdout.flush()
+
+            print("\n" + "="*55)
+            print("AGENT OUTPUT:")
+            print("="*55)
+            print(final_answer)
+            print("="*55 + "\n")
+            sys.stdout.flush()
+
+            # Save to file regardless
+            output_file = Path("agent_output.txt")
+            with open(output_file, "a", encoding="utf-8") as f:
+                f.write(f"\nYOU: {user_input}\n")
+                f.write(f"AGENT:\n{final_answer}\n")
+                f.write("="*55 + "\n")
+            print("[Saved to agent_output.txt]")
+            sys.stdout.flush()
+
+
