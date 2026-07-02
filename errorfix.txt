@@ -70,3 +70,96 @@ else:
     print('FAILED:', result.get('error_description'))
 "
 
+
+
+---
+
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+}
+
+# ── MCP initialisation ───────────────────────────────────────────
+async def initialise_session(client: httpx.AsyncClient) -> str:
+    """
+    Perform the MCP initialisation handshake.
+    FastMCP streamable-http requires this before any tool calls.
+    Returns the session ID assigned by the server.
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "quick-test-client",
+                "version": "1.0.0"
+            }
+        }
+    }
+
+    response = await client.post(MCP_URL, headers=HEADERS, json=payload)
+    response.raise_for_status()
+
+    # Extract session ID from response headers — FastMCP assigns one
+    session_id = response.headers.get("mcp-session-id", "")
+    print(f"    Session ID: {session_id[:20]}..." if session_id else "    No session ID returned")
+    return session_id
+
+
+# ── MCP call helper ─────────────────────────────────────────────
+async def call_tool(client: httpx.AsyncClient, tool_name: str, arguments: dict = {}, session_id: str = "") -> dict:
+    """Send one MCP tool call and return the result."""
+
+    # Include session ID in headers if we have one
+    headers = {**HEADERS}
+    if session_id:
+        headers["mcp-session-id"] = session_id
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments,
+        }
+    }
+
+    response = await client.post(MCP_URL, headers=headers, json=payload)
+    response.raise_for_status()
+    data = response.json()
+
+    # MCP returns results inside content[0].text as a JSON string
+    raw = data.get("result", {}).get("content", [{}])[0].get("text", "{}")
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": raw}
+
+--
+
+    async with httpx.AsyncClient(timeout=30) as client:
+
+        # ── Initialise MCP session first ─────────────────────────
+        print("\n[0] Initialising MCP session...")
+        session_id = await initialise_session(client)
+        print("    DONE")
+
+        # ── Test 1: Profile ──────────────────────────────────────
+        print("\n[1] get_my_profile")
+        result = await call_tool(client, "get_my_profile", {}, session_id)
+
+
+--
+
+result = await call_tool(client, "list_emails", {"count": 3}, session_id)
+result = await call_tool(client, "read_email", {"email_id": email_id}, session_id)
+result = await call_tool(client, "search_emails", {"keyword": "meeting", "count": 3}, session_id)
+result = await call_tool(client, "summarise_email", {"email_id": email_id}, session_id)
+result = await call_tool(client, "list_calendar_events", {"date_range": "this week"}, session_id)
+
+
