@@ -751,3 +751,46 @@ asyncio.run(agent_loop())
                 f.write(f"AGENT:\n{final_answer}\n")
                 f.write(f"{'='*55}\n")
             print(f"[Output also saved to agent_output.txt]")
+
+
+python -c "
+import asyncio, json, httpx
+from pathlib import Path
+from config.settings import settings
+
+TOKEN = json.loads(Path('token.json').read_text())['access_token']
+MCP_URL = f'http://localhost:{settings.MCP_PORT}/mcp'
+
+async def test():
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Step 1: Init
+        r = await client.post(MCP_URL, headers={
+            'Authorization': f'Bearer {TOKEN}',
+            'X-Auth-Token': TOKEN,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+        }, json={
+            'jsonrpc': '2.0', 'id': 0, 'method': 'initialize',
+            'params': {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'test', 'version': '1.0'}}
+        })
+        session_id = r.headers.get('mcp-session-id', '')
+        print(f'Session: {session_id[:20]}...')
+
+        # Step 2: Call list_emails
+        r2 = await client.post(MCP_URL, headers={
+            'Authorization': f'Bearer {TOKEN}',
+            'X-Auth-Token': TOKEN,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+            'mcp-session-id': session_id,
+        }, json={
+            'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+            'params': {'name': 'list_emails', 'arguments': {'count': 3}}
+        })
+        print(f'Status: {r2.status_code}')
+        print(f'Content-Type: {r2.headers.get(\"content-type\")}')
+        print(f'Raw response (first 500 chars):')
+        print(r2.text[:500])
+
+asyncio.run(test())
+"
