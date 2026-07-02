@@ -36,7 +36,7 @@ There are two types of Microsoft tokens:
 |**App-only** (what we tested with)|Client secret, no user login|Limited — `/me` not allowed|
 |**Delegated** (what we need)      |User logs in via OAuth popup|Full access to YOUR mailbox|
 
-LibreChat handles the delegated login automatically — you click Authenticate, log in with your Fichtner account, and LibreChat sends the correct token with every tool call. No code change needed.
+LibreChat handles the delegated login automatically — you click Authenticate, log in with your company account, and LibreChat sends the correct token with every tool call. No code change needed.
 
 What’s Next — Stage 5: Connect LibreChat
 You need:
@@ -44,6 +44,6 @@ You need:
 	2.	Your LibreChat URL → get from your team
 Then in LibreChat:
 	•	Add MCP server → enter http://<your-vm-ip>:8000/mcp
-	•	Click Authenticate → log in with Fichtner account
+	•	Click Authenticate → log in with company account
 	•	Green Connected = fully working with real delegated token
 That’s it. Once connected, all 9 tools will work against your real Outlook mailbox.​​​​​​​​​​​​​​​​
