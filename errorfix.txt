@@ -794,3 +794,36 @@ async def test():
 
 asyncio.run(test())
 "
+
+---
+
+    else:
+        # SSE (Server-Sent Events) response — FastMCP default
+        # Format is:
+        #   event: message
+        #   data: {"jsonrpc":"2.0","result":{...}}
+        #
+        # Lines arrive separately so we collect ALL data: lines
+        # and parse the first one that contains a valid result.
+        lines = response.text.splitlines()
+        for line in lines:
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            json_str = line[len("data:"):].strip()
+            if not json_str:
+                continue
+            try:
+                data = json.loads(json_str)
+                # Skip error responses
+                if "error" in data:
+                    error_msg = data["error"].get("message", "Unknown error")
+                    return json.dumps({"error": True, "message": error_msg})
+                content = data.get("result", {}).get("content", [{}])
+                if content:
+                    return content[0].get("text", "{}")
+            except json.JSONDecodeError:
+                continue
+
+    return "{}"
+
