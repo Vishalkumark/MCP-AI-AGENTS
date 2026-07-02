@@ -226,3 +226,25 @@ async def call_tool(client: httpx.AsyncClient, tool_name: str, arguments: dict =
     # ── Case 3: Nothing parseable found ─────────────────────────
     return {"error": True, "message": f"Unparseable response: {text[:200]}"}
 
+
+---
+
+            # ── Step 4: Print final answer ───────────────────────
+            final_answer = assistant_message.get("content", "")
+
+            # Sometimes the LLM returns empty content but has pending
+            # tool calls — force a final plain-text response.
+            if not final_answer or not final_answer.strip():
+                print("  → Composing final answer...\n")
+                # Ask LLM again explicitly for a text-only response
+                messages.append({
+                    "role": "user",
+                    "content": "Based on the tool results above, please provide a clear, well formatted answer to my original question. Do not call any more tools."
+                })
+                final_llm = await call_llm(messages, allow_tools=False)
+                final_answer = final_llm["choices"][0]["message"].get("content", "No response generated.")
+                messages.append(final_llm["choices"][0]["message"])
+
+            print(f"\nAgent: {final_answer}\n")
+            print("-"*55)
+
