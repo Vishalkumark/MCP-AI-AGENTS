@@ -248,3 +248,30 @@ async def call_tool(client: httpx.AsyncClient, tool_name: str, arguments: dict =
             print(f"\nAgent: {final_answer}\n")
             print("-"*55)
 
+
+---
+
+            # ── Step 4: Print final answer ───────────────────────
+            final_answer = assistant_message.get("content", "")
+
+            # DEBUG — see exactly what's coming back
+            print(f"\n  DEBUG role    : {assistant_message.get('role')}")
+            print(f"  DEBUG content : '{final_answer}'")
+            print(f"  DEBUG tool_calls: {assistant_message.get('tool_calls')}")
+            print(f"  DEBUG full msg: {json.dumps(assistant_message, indent=2)[:500]}")
+
+            if not final_answer or not final_answer.strip():
+                print("\n  → Forcing final text response...\n")
+                messages.append({
+                    "role": "user",
+                    "content": "Based on the tool results above, please provide a clear, well formatted answer. Do not call any more tools."
+                })
+                final_llm = await call_llm(messages, allow_tools=False)
+                final_message = final_llm["choices"][0]["message"]
+                print(f"  DEBUG final_llm full: {json.dumps(final_message, indent=2)[:500]}")
+                final_answer = final_message.get("content", "")
+                messages.append(final_message)
+
+            print(f"\nAgent: {final_answer}\n")
+            print("-"*55)
+
