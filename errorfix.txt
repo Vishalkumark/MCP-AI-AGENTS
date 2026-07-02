@@ -162,4 +162,67 @@ result = await call_tool(client, "search_emails", {"keyword": "meeting", "count"
 result = await call_tool(client, "summarise_email", {"email_id": email_id}, session_id)
 result = await call_tool(client, "list_calendar_events", {"date_range": "this week"}, session_id)
 
+--
+
+async def call_tool(client: httpx.AsyncClient, tool_name: str, arguments: dict = {}, session_id: str = "") -> dict:
+    """
+    Send one MCP tool call and return the result.
+    FastMCP streamable-http returns SSE (Server-Sent Events) format,
+    so we parse the event stream to extract the JSON result.
+    """
+
+    headers = {**HEADERS}
+    if session_id:
+        headers["mcp-session-id"] = session_id
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments,
+        }
+    }
+
+    response = await client.post(MCP_URL, headers=headers, json=payload)
+    response.raise_for_status()
+
+    content_type = response.headers.get("content-type", "")
+
+    # ── Case 1: Plain JSON response ──────────────────────────────
+    if "application/json" in content_type:
+        data = response.json()
+        raw = data.get("result", {}).get("content", [{}])[0].get("text", "{}")
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"raw": raw}
+
+    # ── Case 2: SSE (Server-Sent Events) response ────────────────
+    # FastMCP streamable-http sends results as SSE lines like:
+    #   data: {"jsonrpc":"2.0","id":1,"result":{...}}
+    # We read all lines and find the one that contains the result.
+    text = response.text
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            json_str = line[len("data:"):].strip()
+            if not json_str:
+                continue
+            try:
+                data = json.loads(json_str)
+                # Look for the result payload inside the SSE data
+                result = data.get("result", {})
+                content = result.get("content", [{}])
+                raw = content[0].get("text", "{}") if content else "{}"
+                try:
+                    return json.loads(raw)
+                except Exception:
+                    return {"raw": raw}
+            except json.JSONDecodeError:
+                continue
+
+    # ── Case 3: Nothing parseable found ─────────────────────────
+    return {"error": True, "message": f"Unparseable response: {text[:200]}"}
 
