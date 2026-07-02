@@ -536,3 +536,463 @@ You: Find emails about budget and summarise the latest one
 
 The agent selects the right tools, calls your real Outlook data, and prints the answer. Let me know what output you get.​​​​​​​​​​​​​​​​
 
+
+# “””
+agent_test.py
+
+Interactive agent loop that lets you prompt your MCP tools
+directly from VS Code terminal — no LibreChat needed.
+
+The LLM reads your prompt, decides which MCP tool to call,
+executes it against your real Outlook data, and prints the result.
+
+Requires:
+- python server.py running in Terminal 1
+- token.json present (run get_token.py first)
+
+Usage:
+python agent_test.py
+
+Type ‘quit’ to exit.
+“””
+
+import asyncio
+import json
+import httpx
+from pathlib import Path
+from config.settings import settings
+from utils.logger import get_logger
+
+logger = get_logger(**name**)
+
+# ── Config ───────────────────────────────────────────────────────
+
+MCP_URL    = f”http://localhost:{settings.MCP_PORT}/mcp”
+TOKEN_FILE = Path(“token.json”)
+
+# ── Tool definitions for the LLM ─────────────────────────────────
+
+TOOLS = [
+{
+“type”: “function”,
+“function”: {
+“name”: “get_my_profile”,
+“description”: “Get the display name, email address, and job title of the currently logged-in Microsoft 365 user.”,
+“parameters”: {“type”: “object”, “properties”: {}, “required”: []},
+}
+},
+{
+“type”: “function”,
+“function”: {
+“name”: “list_emails”,
+“description”: “List the most recent emails in the user’s Outlook inbox.”,
+“parameters”: {
+“type”: “object”,
+“properties”: {
+“count”: {“type”: “integer”, “description”: “Number of emails to return (default 10, max 50)”}
+},
+“required”: []
+},
+}
+},
+{
+“type”: “function”,
+“function”: {
+“name”: “read_email”,
+“description”: “Read the full content of a specific email by its ID.”,
+“parameters”: {
+“type”: “object”,
+“properties”: {
+“email_id”: {“type”: “string”, “description”: “The unique Graph API ID of the email”}
+},
+“required”: [“email_id”]
+},
+}
+},
+{
+“type”: “function”,
+“function”: {
+“name”: “search_emails”,
+“description”: “Search the user’s mailbox for emails matching a keyword.”,
+“parameters”: {
+“type”: “object”,
+“properties”: {
+“keyword”: {“type”: “string”, “description”: “Search term”},
+“count”: {“type”: “integer”, “description”: “Max results to return”}
+},
+“required”: [“keyword”]
+},
+}
+},
+{
+“type”: “function”,
+“function”: {
+“name”: “summarise_email”,
+“description”: “Generate a concise AI summary of a specific email’s content.”,
+“parameters”: {
+“type”: “object”,
+“properties”: {
+“email_id”: {“type”: “string”, “description”: “The unique Graph API ID of the email”}
+},
+“required”: [“email_id”]
+},
+}
+},
+{
+“type”: “function”,
+“function”: {
+“name”: “list_calendar_events”,
+“description”: “List the user’s upcoming calendar events within a given time range.”,
+“parameters”: {
+“type”: “object”,
+“properties”: {
+“date_range”: {
+“type”: “string”,
+“description”: “Natural language range: today, tomorrow, this week, next 7 days”
+}
+},
+“required”: []
+},
+}
+},
+{
+“type”: “function”,
+“function”: {
+“name”: “list_attachments”,
+“description”: “List all attachments on a specific email without reading their content.”,
+“parameters”: {
+“type”: “object”,
+“properties”: {
+“email_id”: {“type”: “string”, “description”: “The unique Graph API ID of the email”}
+},
+“required”: [“email_id”]
+},
+}
+},
+{
+“type”: “function”,
+“function”: {
+“name”: “read_attachment”,
+“description”: “Extract and return the text content of an email attachment (PDF, Word, PowerPoint, Excel).”,
+“parameters”: {
+“type”: “object”,
+“properties”: {
+“email_id”: {“type”: “string”, “description”: “The unique Graph API ID of the parent email”},
+“attachment_id”: {“type”: “string”, “description”: “The unique ID of the attachment”}
+},
+“required”: [“email_id”, “attachment_id”]
+},
+}
+},
+{
+“type”: “function”,
+“function”: {
+“name”: “summarise_attachment”,
+“description”: “Read an email attachment and generate a concise AI summary of its content.”,
+“parameters”: {
+“type”: “object”,
+“properties”: {
+“email_id”: {“type”: “string”, “description”: “The unique Graph API ID of the parent email”},
+“attachment_id”: {“type”: “string”, “description”: “The unique ID of the attachment”}
+},
+“required”: [“email_id”, “attachment_id”]
+},
+}
+},
+]
+
+# ── Token loader ─────────────────────────────────────────────────
+
+def load_token() -> str:
+“””
+Load the delegated OAuth token saved by get_token.py.
+Exits cleanly if token.json is not found.
+“””
+if not TOKEN_FILE.exists():
+print(“❌ token.json not found. Run: python get_token.py first.”)
+raise SystemExit(1)
+data = json.loads(TOKEN_FILE.read_text())
+return data[“access_token”]
+
+# ── MCP helpers ──────────────────────────────────────────────────
+
+async def mcp_initialise(client: httpx.AsyncClient, token: str) -> str:
+“””
+Perform the MCP handshake with the FastMCP server.
+Returns the session ID assigned by the server.
+The token is passed here so the server knows who is connecting.
+“””
+headers = {
+“Authorization”: f”Bearer {token}”,
+“Content-Type”: “application/json”,
+“Accept”: “application/json, text/event-stream”,
+}
+payload = {
+“jsonrpc”: “2.0”,
+“id”: 0,
+“method”: “initialize”,
+“params”: {
+“protocolVersion”: “2024-11-05”,
+“capabilities”: {},
+“clientInfo”: {
+“name”: “agent-test”,
+“version”: “1.0.0”
+}
+}
+}
+response = await client.post(MCP_URL, headers=headers, json=payload)
+response.raise_for_status()
+session_id = response.headers.get(“mcp-session-id”, “”)
+return session_id
+
+async def mcp_call_tool(
+client: httpx.AsyncClient,
+token: str,
+session_id: str,
+tool_name: str,
+arguments: dict
+) -> str:
+“””
+Call one MCP tool on the running FastMCP server and return
+the raw result string.
+
+```
+The token is passed in BOTH the Authorization header AND the
+X-Auth-Token header so that graph_auth.py can find it
+regardless of how FastMCP forwards headers to tool functions.
+The session ID ties this call to the initialised session.
+"""
+headers = {
+    # Primary auth header — standard Bearer token format
+    "Authorization": f"Bearer {token}",
+    # Secondary header — fallback for graph_auth.py if FastMCP
+    # doesn't forward Authorization into the tool context
+    "X-Auth-Token": token,
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    # Session ID ties this request to the initialised MCP session
+    "mcp-session-id": session_id,
+}
+
+payload = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": tool_name,
+        "arguments": arguments
+    }
+}
+
+response = await client.post(MCP_URL, headers=headers, json=payload)
+response.raise_for_status()
+
+# ── Parse response — handles both JSON and SSE formats ────────
+content_type = response.headers.get("content-type", "")
+
+if "application/json" in content_type:
+    # Plain JSON response path
+    data = response.json()
+    content = data.get("result", {}).get("content", [{}])
+    return content[0].get("text", "{}") if content else "{}"
+
+else:
+    # SSE (Server-Sent Events) response path
+    # FastMCP streamable-http sends results as lines starting with "data:"
+    for line in response.text.splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            json_str = line[len("data:"):].strip()
+            if not json_str:
+                continue
+            try:
+                data = json.loads(json_str)
+                content = data.get("result", {}).get("content", [{}])
+                return content[0].get("text", "{}") if content else "{}"
+            except json.JSONDecodeError:
+                continue
+
+return "{}"
+```
+
+# ── LLM call ─────────────────────────────────────────────────────
+
+async def call_llm(messages: list, allow_tools: bool = True) -> dict:
+“””
+Send the conversation history to Requesty.AI and return the
+full response object.
+
+```
+allow_tools=True  → LLM can decide to call MCP tools
+allow_tools=False → LLM must respond with plain text only
+                    (used when forcing the final answer)
+"""
+async with httpx.AsyncClient(timeout=60) as http:
+    payload = {
+        "model": settings.REQUESTY_PRIMARY_MODEL,
+        "messages": messages,
+        "max_tokens": 1000,
+        "temperature": 0.3,
+    }
+    if allow_tools:
+        payload["tools"] = TOOLS
+        payload["tool_choice"] = "auto"
+
+    response = await http.post(
+        f"{settings.REQUESTY_BASE_URL}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {settings.REQUESTY_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload
+    )
+    response.raise_for_status()
+    return response.json()
+```
+
+# ── Agent loop ───────────────────────────────────────────────────
+
+async def agent_loop():
+print(”\n” + “=”*55)
+print(”  outlook-ai-agent-mcp — VS Code Agent Test”)
+print(”=”*55)
+print(”  Your MCP tools are live. Type a prompt below.”)
+print(”  Type ‘quit’ to exit.\n”)
+
+```
+# Step 1: Load the delegated token from token.json
+token = load_token()
+
+async with httpx.AsyncClient(timeout=60) as mcp_client:
+
+    # Step 2: Initialise the MCP session once — all tool calls
+    #         in this session reuse the same session ID
+    print("Connecting to MCP server...")
+    session_id = await mcp_initialise(mcp_client, token)
+    print(f"✅ MCP session ready\n")
+
+    # Step 3: Set up the conversation history with a system prompt
+    #         that tells the LLM what role it plays and what tools
+    #         are available to it
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an intelligent Outlook email assistant with access "
+                "to MCP tools that can read emails, summarise them, check "
+                "calendar events, and read attachments from a Microsoft 365 "
+                "mailbox. Always use the appropriate tool to fetch real data "
+                "before answering. Never make up or guess email content. "
+                "After receiving tool results, always compose a clear, "
+                "well-formatted response for the user."
+            )
+        }
+    ]
+
+    # Step 4: Main prompt loop
+    while True:
+
+        # Get user input
+        try:
+            user_input = input("You: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n\nExiting agent. Goodbye.")
+            break
+
+        if user_input.lower() in ("quit", "exit", "q"):
+            print("Exiting agent. Goodbye.")
+            break
+
+        if not user_input:
+            continue
+
+        # Add user message to conversation history
+        messages.append({"role": "user", "content": user_input})
+
+        print("\nAgent thinking...\n")
+
+        # ── Step 5: First LLM call — let it decide what to do ─
+        llm_response = await call_llm(messages, allow_tools=True)
+        assistant_message = llm_response["choices"][0]["message"]
+        messages.append(assistant_message)
+
+        # ── Step 6: Tool call loop ────────────────────────────
+        # The LLM may request multiple tools in sequence.
+        # We keep executing until it stops requesting tools.
+        max_tool_rounds = 5  # Safety cap — prevents infinite loops
+        tool_round = 0
+
+        while assistant_message.get("tool_calls") and tool_round < max_tool_rounds:
+            tool_round += 1
+
+            for tool_call in assistant_message["tool_calls"]:
+                tool_name = tool_call["function"]["name"]
+                arguments = json.loads(tool_call["function"]["arguments"])
+
+                print(f"  → Calling tool : {tool_name}")
+                if arguments:
+                    for k, v in arguments.items():
+                        # Truncate long IDs in display for readability
+                        display_v = str(v)[:60] + "..." if len(str(v)) > 60 else str(v)
+                        print(f"    {k}: {display_v}")
+
+                # Execute the tool on the MCP server
+                tool_result_raw = await mcp_call_tool(
+                    mcp_client, token, session_id, tool_name, arguments
+                )
+
+                # Try to pretty-print the result for the terminal
+                try:
+                    parsed = json.loads(tool_result_raw)
+                    if isinstance(parsed, list):
+                        print(f"  ✅ Tool returned {len(parsed)} item(s)")
+                    elif isinstance(parsed, dict) and parsed.get("error"):
+                        print(f"  ⚠️  Tool error: {parsed.get('message')}")
+                    else:
+                        print(f"  ✅ Tool returned result")
+                except Exception:
+                    print(f"  ✅ Tool returned result")
+
+                print()
+
+                # Add the tool result to conversation history
+                # so the LLM can use it in the next step
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": tool_result_raw,
+                })
+
+            # Ask the LLM again with the tool results now in context
+            llm_response = await call_llm(messages, allow_tools=True)
+            assistant_message = llm_response["choices"][0]["message"]
+            messages.append(assistant_message)
+
+        # ── Step 7: Force a final text answer if content is empty
+        # Sometimes the LLM returns empty content after tool calls
+        # instead of composing the final answer — we detect this
+        # and explicitly ask for a text-only response.
+        final_answer = assistant_message.get("content", "")
+
+        if not final_answer or not final_answer.strip():
+            print("  → Composing final answer...\n")
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Based on the tool results above, please provide "
+                    "a clear, well-formatted answer to my original "
+                    "question. Do not call any more tools."
+                )
+            })
+            final_llm = await call_llm(messages, allow_tools=False)
+            final_message = final_llm["choices"][0]["message"]
+            final_answer = final_message.get("content", "No response generated.")
+            messages.append(final_message)
+
+        # ── Step 8: Print the final answer ───────────────────
+        print(f"Agent: {final_answer}\n")
+        print("-" * 55)
+```
+
+if **name** == “**main**”:
+asyncio.run(agent_loop())
