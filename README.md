@@ -1466,3 +1466,46 @@ async def agent_loop():
 
 if __name__ == "__main__":
     asyncio.run(agent_loop())
+
+
+---
+
+    headers = get_http_headers()
+    # TEMPORARY DEBUG — remove after fixing
+    logger.info(f"DEBUG incoming headers: {dict(headers)}")
+
+    auth_header = (
+        headers.get("Authorization")
+        or headers.get("authorization")
+        or headers.get("X-Auth-Token")
+        or headers.get("x-auth-token")
+    )
+
+    # Wrap raw token if it doesn't have Bearer prefix
+    if auth_header and not auth_header.startswith("Bearer "):
+        auth_header = f"Bearer {auth_header}"
+
+    if not auth_header:
+        logger.warning("No Authorization header found in incoming request")
+        raise AuthorizationError(
+            "Missing Authorization header. Please authenticate via "
+            "LibreChat's MCP server settings."
+        )
+
+    if not auth_header.startswith("Bearer "):
+        logger.warning("Authorization header is malformed (missing 'Bearer ' prefix)")
+        raise AuthorizationError(
+            "Authorization header is malformed. Expected 'Bearer <token>'."
+        )
+
+    token = auth_header.removeprefix("Bearer ").strip()
+
+    if not token:
+        logger.warning("Authorization header present but token is empty")
+        raise AuthorizationError("Authorization token is empty.")
+
+    token_preview = f"{token[:8]}...{token[-4:]}" if len(token) > 12 else "***"
+    logger.debug(f"Access token extracted successfully (preview: {token_preview})")
+
+    return token
+
