@@ -1607,4 +1607,353 @@ if __name__ == "__main__":
             print("[Saved to agent_output.txt]")
             sys.stdout.flush()
 
+---
+---
 
+Good thinking. Let me analyse every error we hit, every fix we applied, and forecast what LibreChat connection will bring. I’ll give you precise, targeted changes — no full file rewrites, just the exact updates needed.
+
+Analysis of All Errors & Fixes Applied
+
+
+
+|# |Error                              |Root Cause                                      |Fix Applied                                        |
+|--|-----------------------------------|------------------------------------------------|---------------------------------------------------|
+|1 |`get_pdf_data()` AttributeError    |PyMuPDF API rename in newer versions            |Changed to `tobytes()`                             |
+|2 |`list_tools()` not awaited         |FastMCP `list_tools` is async                   |Added `await`                                      |
+|3 |Health check returning plain dict  |FastMCP custom routes need `JSONResponse`       |Wrapped in `JSONResponse`                          |
+|4 |Tools registered = 0               |Circular import between `server.py` and `tools/`|Created `tools/mcp_instance.py`                    |
+|5 |406 Not Acceptable                 |Missing `Accept` header in MCP requests         |Added `Accept: application/json, text/event-stream`|
+|6 |400 Bad Request                    |Missing MCP initialisation handshake            |Added `initialize` call before tool calls          |
+|7 |Auth token not reaching Graph      |FastMCP strips `Authorization` header internally|Added `X-Auth-Token` fallback header               |
+|8 |Token wrapped without Bearer prefix|`X-Auth-Token` arrives raw without `Bearer `    |Added auto-wrap logic in `graph_auth.py`           |
+|9 |SSE parsing failing                |`event:` and `data:` on separate lines          |Fixed SSE parser to handle multiline format        |
+|10|LLM output empty                   |`max_tokens: 1000` consumed by reasoning tokens |Increased to `max_tokens: 4000`                    |
+
+Now let me give you every file that needs updating.
+
+File 1 — parsers/ocr_fallback.py
+The tobytes() fix is needed here too — same PyMuPDF version issue.
+Find:
+
+            image_bytes = pix.tobytes("png")
+
+
+This is already correct — tobytes() is the right call here. ✅ No change needed.
+
+File 2 — auth/graph_auth.py
+Complete updated file — incorporates the X-Auth-Token fallback, auto Bearer wrapping, and removes the debug line:
+
+"""
+graph_auth.py
+=============
+Handles extraction and basic validation of the OAuth access token that
+LibreChat (or any MCP client) sends with every tool call request.
+
+Why this file exists:
+    Implements the delegated auth model — the token always belongs to
+    the logged-in user, never a shared service account. LibreChat
+    acquires this token via its OAuth flow and forwards it on every
+    request. This file safely retrieves that token.
+
+Token sources (checked in priority order):
+    1. Authorization: Bearer <token>   — standard HTTP auth header
+    2. X-Auth-Token: <token>           — fallback for clients where
+                                         FastMCP strips the Authorization
+                                         header before it reaches tools
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from fastmcp.server.dependencies import get_http_headers
+from fastmcp.exceptions import AuthorizationError
+
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Function: get_current_access_token
+# ---------------------------------------------------------------------------
+def get_current_access_token() -> str:
+    """
+    Extract the Microsoft Graph OAuth access token from the current
+    incoming request headers.
+
+    Checks Authorization header first, then X-Auth-Token as fallback.
+    Automatically adds 'Bearer ' prefix if the raw token arrives without it.
+
+    Returns:
+        str: The raw bearer token string (without the 'Bearer ' prefix).
+
+    Raises:
+        AuthorizationError: If no token is found in any checked header.
+    """
+    # Step 1: Get all headers from the current incoming HTTP request.
+    headers = get_http_headers()
+
+    # Step 2: Check Authorization header first (standard), then
+    #         X-Auth-Token as fallback (used by agent_test.py and
+    #         any client where FastMCP middleware strips Authorization).
+    auth_header = (
+        headers.get("Authorization")
+        or headers.get("authorization")
+        or headers.get("X-Auth-Token")
+        or headers.get("x-auth-token")
+    )
+
+    if not auth_header:
+        logger.warning("No auth token found in any expected header")
+        raise AuthorizationError(
+            "Missing Authorization header. Please authenticate via "
+            "LibreChat's MCP server settings."
+        )
+
+    # Step 3: Auto-wrap raw token with Bearer prefix if missing.
+    #         X-Auth-Token arrives as a raw token without the prefix,
+    #         so we normalise it here rather than failing on format.
+    if not auth_header.startswith("Bearer "):
+        auth_header = f"Bearer {auth_header}"
+
+    # Step 4: Extract just the token part.
+    token = auth_header.removeprefix("Bearer ").strip()
+
+    if not token:
+        logger.warning("Auth header present but token value is empty")
+        raise AuthorizationError("Authorization token is empty.")
+
+    # Step 5: Log a safe preview only — never log the full token.
+    token_preview = f"{token[:8]}...{token[-4:]}" if len(token) > 12 else "***"
+    logger.debug(f"Access token extracted successfully (preview: {token_preview})")
+
+    return token
+
+
+File 3 — graph/graph_client_factory.py
+The StaticTokenCredential.get_token() uses a hardcoded far-future expiry. Add a proper expiry using current time to avoid potential SDK validation issues:
+Find:
+
+    def get_token(self, *scopes, **kwargs) -> AccessToken:
+        return AccessToken(self._token, int(9999999999))
+
+
+Replace with:
+
+    def get_token(self, *scopes, **kwargs) -> AccessToken:
+        # Set expiry 1 hour from now in epoch seconds.
+        # This credential object only lives for one request's duration
+        # anyway, so the exact value doesn't matter — but using a
+        # realistic expiry avoids potential SDK validation warnings.
+        import time
+        expiry = int(time.time()) + 3600
+        return AccessToken(self._token, expiry)
+
+
+File 4 — graph/mail_client.py
+Forecasted issue: when Graph API returns HTML email bodies, the LLM receives messy HTML tags. Strip them to plain text:
+Find:
+
+        "body": {
+            "content": message.body.content if message.body else "",
+        },
+
+
+Replace with:
+
+        "body": {
+            "content": _clean_body(message.body.content if message.body else ""),
+        },
+
+
+And add this helper function near the top of the file, just after the imports:
+
+import re
+
+def _clean_body(raw_content: str) -> str:
+    """
+    Strip HTML tags from email body content so the LLM receives
+    clean plain text instead of raw HTML markup.
+    Graph API returns HTML bodies by default for rich-text emails.
+    """
+    if not raw_content:
+        return ""
+    # Remove HTML tags
+    text = re.sub(r"<[^>]+>", " ", raw_content)
+    # Collapse multiple whitespace/newlines into single spaces
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+File 5 — llm/requesty_client.py
+Increase max_tokens from 500 to 4000 to prevent reasoning models from being cut off:
+Find:
+
+        "max_tokens": 500,
+        "temperature": 0.3,
+
+
+Replace with:
+
+        "max_tokens": 4000,
+        "temperature": 0.3,
+
+
+File 6 — server.py
+Two updates — JSONResponse import already added during debugging, and list_tools await already fixed. Add one forecasted fix: LibreChat sends an OPTIONS preflight request before connecting. Without CORS headers it will fail silently.
+Find:
+
+from starlette.responses import JSONResponse
+
+
+Replace with:
+
+from starlette.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
+
+
+Then find:
+
+mcp = FastMCP(settings.MCP_SERVER_NAME)
+
+
+Replace with:
+
+from tools.mcp_instance import mcp
+
+
+Wait — that’s already done. So just add the CORS middleware after the mcp import block. Find:
+
+logger = get_logger(__name__)
+
+
+Add these lines directly after it:
+
+# ---------------------------------------------------------------------------
+# CORS middleware — required for LibreChat to connect from a different
+# origin (different domain/port). Without this, LibreChat's browser-based
+# connection will be blocked by the browser's cross-origin policy.
+# ---------------------------------------------------------------------------
+from starlette.middleware.cors import CORSMiddleware
+
+cors_app_wrapper = None  # placeholder — applied after mcp is initialised
+
+
+Then at the very bottom of server.py, find:
+
+    mcp.run(
+        transport=settings.MCP_TRANSPORT,
+        host=settings.MCP_HOST,
+        port=settings.MCP_PORT,
+    )
+
+
+Replace with:
+
+    mcp.run(
+        transport=settings.MCP_TRANSPORT,
+        host=settings.MCP_HOST,
+        port=settings.MCP_PORT,
+    )
+
+
+Actually FastMCP handles CORS differently — add it via settings instead. Find the mcp creation in tools/mcp_instance.py:
+
+mcp = FastMCP(settings.MCP_SERVER_NAME)
+
+
+Replace with:
+
+mcp = FastMCP(
+    settings.MCP_SERVER_NAME,
+    # Allow LibreChat (on a different origin) to connect.
+    # In production, replace "*" with your LibreChat domain.
+    cors_origins=["*"],
+)
+
+
+File 7 — utils/error_handler.py
+Add handling for the ODataError that Graph SDK raises (we saw it during the expired token test):
+Find:
+
+    if "AuthorizationError" in exc_type or "Unauthorized" in exc_type:
+        user_message = (
+            "Authentication failed. Your Microsoft session may have "
+            "expired. Please re-authenticate via LibreChat's MCP "
+            "server settings."
+        )
+
+
+Replace with:
+
+    if "AuthorizationError" in exc_type or "Unauthorized" in exc_type:
+        user_message = (
+            "Authentication failed. Your Microsoft session may have "
+            "expired. Please re-authenticate via LibreChat's MCP "
+            "server settings."
+        )
+
+    elif "ODataError" in exc_type or "APIError" in exc_type:
+        # Microsoft Graph SDK raises ODataError for API-level failures.
+        # Extract the inner message if available, otherwise use generic.
+        inner = getattr(exc, "error", None)
+        inner_msg = getattr(inner, "message", None) if inner else None
+        if inner_msg and "expired" in inner_msg.lower():
+            user_message = (
+                "Your Microsoft access token has expired. Please "
+                "re-authenticate via LibreChat's MCP server settings."
+            )
+        elif inner_msg and "insufficient" in inner_msg.lower():
+            user_message = (
+                "Insufficient permissions to complete this action. "
+                "Please check that the required Graph API permissions "
+                "have been granted in Azure Portal."
+            )
+        else:
+            user_message = (
+                f"Microsoft Graph API returned an error: "
+                f"{inner_msg or 'Unknown error'}. Please try again."
+            )
+
+
+File 8 — .env
+Update the primary model to match what Requesty is actually routing to:
+Find:
+
+REQUESTY_PRIMARY_MODEL=azure/gpt-4.1-nano@swedencentral
+
+
+Replace with:
+
+REQUESTY_PRIMARY_MODEL=gpt-5-nano-2025-08-07
+
+
+File 9 — tests/test_parsers.py
+The tobytes() fix and reload fix are already applied. Remove the debug print we added temporarily:
+In test_parser_router_routes_pdf, remove:
+
+    print(f"\nDEBUG extracted text: '{result['text'][:100]}'")
+
+
+Summary of All Changes
+
+
+
+|File                           |Change                                                                      |
+|-------------------------------|----------------------------------------------------------------------------|
+|`auth/graph_auth.py`           |Full rewrite — X-Auth-Token fallback + auto Bearer wrap + debug line removed|
+|`graph/graph_client_factory.py`|Realistic token expiry using `time.time()`                                  |
+|`graph/mail_client.py`         |HTML stripping from email body via `_clean_body()`                          |
+|`llm/requesty_client.py`       |`max_tokens` 500 → 4000                                                     |
+|`tools/mcp_instance.py`        |Added `cors_origins=["*"]` for LibreChat connection                         |
+|`utils/error_handler.py`       |Added `ODataError` / `APIError` handling                                    |
+|`.env`                         |Updated `REQUESTY_PRIMARY_MODEL` to actual model name                       |
+|`tests/test_parsers.py`        |Removed temporary debug print                                               |
+|`agent_test.py`                |Already fixed — `max_tokens` 4000, SSE parser, debug steps can be cleaned up|
+
+Apply all these changes, run the tests once more to confirm nothing broke:
+
+python -m pytest tests/ -v
+
+
+Then confirm and I’ll give you Stage 5 — LibreChat connection.​​​​​​​​​​​​​​​​
