@@ -827,3 +827,23 @@ asyncio.run(test())
 
     return "{}"
 
+
+---
+
+
+    # Step 3: Auto-wrap raw token with Bearer prefix if missing.
+    #         X-Auth-Token arrives as a raw token without the prefix.
+    #         Only wrap if it doesn't already have a recognised auth
+    #         scheme prefix (Basic, Digest, etc.) — those are genuinely
+    #         malformed and should be rejected.
+    KNOWN_SCHEMES = ("basic ", "digest ", "negotiate ", "ntlm ")
+    header_lower = auth_header.lower()
+    if not auth_header.startswith("Bearer "):
+        if any(header_lower.startswith(scheme) for scheme in KNOWN_SCHEMES):
+            logger.warning(f"Authorization header uses unsupported scheme")
+            raise AuthorizationError(
+                "Authorization header is malformed. Expected 'Bearer <token>'."
+            )
+        # Raw token (e.g. from X-Auth-Token) — wrap it
+        auth_header = f"Bearer {auth_header}"
+
