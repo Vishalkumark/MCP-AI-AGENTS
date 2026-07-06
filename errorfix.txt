@@ -986,4 +986,67 @@ Your code is fully working on localhost. Go ahead and test agent_test.py on FGSV
 python bin/agent_test.py
 
 
-Confirm it works end to end on Linux, then we’ll sort the nginx issue in parallel and move to LibreChat. What does the agent test output look like on FGSV297?​​​​​​​​​​​​​​​​
+Confirm it works end to end on Linux, 
+then we’ll sort the nginx issue in parallel
+ and move to LibreChat. 
+What does the agent test output look like on FGSV297?​​​​​​​​​​​​​​​​
+
+
+---
+
+
+The nginx config looks correct — server_name, SSL cert, and proxy_pass to port 8000 are all right.
+The 421 is happening because of default_server on line 1. When nginx has multiple server blocks and one is marked default_server, it can misdirect requests that don’t clearly match.
+One missing line is causing it — the X-Auth-Token header is not being forwarded through nginx. And the default_server flag may be conflicting.
+
+What to ask your team to change in the nginx config
+Send them this exact diff:
+
+server {
+    listen 443 ssl http2;                    # REMOVE default_server
+    server_name figpt-mcp-outlook.fichtnergroup.com;
+
+    ssl_certificate /etc/ssl/certs/wildcard.fichtnergroup.com.26.crt;
+    ssl_certificate_key /etc/ssl/private/wildcard.fichtnergroup.com.26.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+
+        # Required for MCP auth token passthrough
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Auth-Token $http_x_auth_token;
+
+        # Required for MCP streaming responses
+        proxy_set_header Accept $http_accept;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+    }
+}
+
+
+Two key changes:
+	1.	Remove default_server from the listen line
+	2.	Add the three missing proxy_set_header lines — Authorization, X-Auth-Token, and Accept
+
+Tell your team
+“Please update the nginx config for figpt-mcp-outlook.fichtnergroup.com:
+	1.	Remove default_server from the listen directive
+	2.	Add these three headers to the location block:
+	•	proxy_set_header Authorization $http_authorization;
+	•	proxy_set_header X-Auth-Token $http_x_auth_token;
+	•	proxy_set_header Accept $http_accept;
+	•	proxy_buffering off;
+	•	proxy_read_timeout 300s;
+Then run sudo nginx -s reload”
+Once they make that change and reload nginx, test with:
+
+curl -v https://figpt-mcp-outlook.fichtnergroup.com/health
+
+
+Paste the output.​​​​​​​​​​​​​​​​
