@@ -867,3 +867,47 @@ asyncio.run(test())
         )
         self.MCP_PUBLIC_URL: str = _optional_env("MCP_PUBLIC_URL", "")
 
+
+---
+
+The 421 is coming from nginx — SSL certificate doesn’t match the hostname. Since agent_test.py is running ON FGSV297 itself, there’s no need to go through the external HTTPS URL. Connect directly to localhost instead.
+
+Fix in bin/agent_test.py
+Find:
+
+MCP_URL = f"http://localhost:{settings.MCP_PORT}/mcp"
+
+
+This should already be localhost — but check what it actually says in your bin/agent_test.py. If it was updated to use the public URL, revert it:
+
+# When running ON the server itself, always use localhost directly.
+# The public HTTPS URL is only for external clients (LibreChat).
+MCP_URL = f"http://localhost:{settings.MCP_PORT}/mcp"
+
+
+Also check bin/get_token.py
+Make sure it’s using the correct authority. Run it first to get a fresh token on FGSV297:
+
+python bin/get_token.py
+
+
+Then run the agent:
+
+python bin/agent_test.py
+
+
+Root cause of 421 explained
+
+agent_test.py on FGSV297
+        │
+        │ requests https://figpt-mcp-outlook.fgp.com/mcp
+        ▼
+nginx receives the request but its SSL cert
+is issued for a different hostname → 421
+
+Fix: agent_test.py on FGSV297 should call
+localhost:8000 directly, bypassing nginx entirely.
+nginx is only needed for EXTERNAL clients like LibreChat.
+
+
+Paste the output after the fix.​​​​​​​​​​​​​​​​
