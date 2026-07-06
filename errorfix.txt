@@ -957,3 +957,33 @@ python bin/agent_test.py
 
 Once agent_test works on FGSV297 with localhost, your code is fully validated. The SSL issue is purely your team’s infrastructure configuration — zero code changes needed from your side.
 Confirm agent_test works on FGSV297 and we move straight to LibreChat connection.​​​​​​​​​​​​​​​​
+
+
+---
+
+The SSL certificate is perfectly valid. *.fichtnergroup.com covers figpt-mcp-outlook.fichtnergroup.com — that’s not the problem.
+The 421 is coming from nginx configuration, not the certificate. Specifically nginx is receiving the HTTPS request but not recognising the server_name correctly.
+
+What to send your team
+Forward them exactly this:
+“SSL certificate is valid and matches the hostname. The 421 is coming from nginx not having figpt-mcp-outlook.fichtnergroup.com configured as a server_name. Please check the nginx site config for this domain and confirm it has:
+
+server_name figpt-mcp-outlook.fichtnergroup.com;
+
+
+and that it’s proxying to http://127.0.0.1:8000.”
+
+Quick check you can run yourself on FGSV297
+
+sudo nginx -T | grep -A 20 "figpt-mcp-outlook"
+
+
+This shows the nginx config for your domain. Paste the output — I can tell you immediately what’s misconfigured.
+
+Meanwhile — don’t wait for nginx
+Your code is fully working on localhost. Go ahead and test agent_test.py on FGSV297 right now:
+
+python bin/agent_test.py
+
+
+Confirm it works end to end on Linux, then we’ll sort the nginx issue in parallel and move to LibreChat. What does the agent test output look like on FGSV297?​​​​​​​​​​​​​​​​
