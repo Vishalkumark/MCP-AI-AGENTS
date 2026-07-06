@@ -855,3 +855,15 @@ asyncio.run(test())
     logger.info(f"MCP endpoint : {display_url}/mcp")
     logger.info(f"Health check : {display_url}/health")
     logger.info(f"Internal     : http://{settings.MCP_HOST}:{settings.MCP_PORT}/mcp")
+
+
+        self.MCP_HOST: str = _optional_env("MCP_HOST", "0.0.0.0")
+        self.MCP_PORT: int = int(_optional_env("MCP_PORT", "8000"))
+        self.MCP_SERVER_NAME: str = _optional_env(
+            "MCP_SERVER_NAME", "outlook-ai-agent-mcp"
+        )
+        self.MCP_TRANSPORT: str = _optional_env(
+            "MCP_TRANSPORT", "streamable-http"
+        )
+        self.MCP_PUBLIC_URL: str = _optional_env("MCP_PUBLIC_URL", "")
+
