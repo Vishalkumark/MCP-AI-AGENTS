@@ -847,3 +847,11 @@ asyncio.run(test())
         # Raw token (e.g. from X-Auth-Token) — wrap it
         auth_header = f"Bearer {auth_header}"
 
+---
+
+    # Use public URL in logs if configured, otherwise fall back to local
+    public_url = getattr(settings, "MCP_PUBLIC_URL", None)
+    display_url = public_url if public_url else f"http://{settings.MCP_HOST}:{settings.MCP_PORT}"
+    logger.info(f"MCP endpoint : {display_url}/mcp")
+    logger.info(f"Health check : {display_url}/health")
+    logger.info(f"Internal     : http://{settings.MCP_HOST}:{settings.MCP_PORT}/mcp")
