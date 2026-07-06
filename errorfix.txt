@@ -1,4 +1,4 @@
-def make_minimal_pdf_bytes(text: str = "Hello from PDF") -> bytes:
+modef make_minimal_pdf_bytes(text: str = "Hello from PDF") -> bytes:
     """
     Create a minimal valid PDF in memory containing the given text,
     using PyMuPDF itself. Returns raw bytes.
@@ -911,3 +911,49 @@ nginx is only needed for EXTERNAL clients like LibreChat.
 
 
 Paste the output after the fix.​​​​​​​​​​​​​​​​
+
+---
+
+Perfect. Since localhost works fine on FGSV297, just use that for agent_test.py testing. You don’t need the HTTPS URL at all for this stage.
+
+For testing on FGSV297 right now
+Simply run as-is with localhost — it already works:
+
+python bin/agent_test.py
+
+
+Since MCP_URL = f"http://localhost:{settings.MCP_PORT}/mcp" is already correct, this will work fine.
+
+The 421 / SSL issue — explained simply
+The 421 error means:
+
+Your team gave you:   figpt-mcp-outlook.fichtnergroup.com
+SSL cert is valid for: something-else.fichtnergroup.com
+                              │
+                              └── These don't match → 421
+
+
+How to check — run this on FGSV297:
+
+curl -v https://figpt-mcp-outlook.fichtnergroup.com/health 2>&1 | grep -E "subject|issuer|SSL|certificate"
+
+
+Paste the output and I’ll tell you exactly what the cert is issued for.
+
+What to tell your team
+Forward them this message:
+“The server returns 421 Misdirected Request when hitting https://figpt-mcp-outlook.fichtnergroup.com. This usually means the nginx SSL certificate’s CN/SAN doesn’t include this hostname. Can you check the nginx SSL config on FGSV297 and confirm the certificate covers figpt-mcp-outlook.fichtnergroup.com?”
+
+Your immediate next step
+Don’t wait for the SSL fix. Test everything with localhost first:
+
+# Terminal 1
+python server.py
+
+# Terminal 2  
+python bin/get_token.py
+python bin/agent_test.py
+
+
+Once agent_test works on FGSV297 with localhost, your code is fully validated. The SSL issue is purely your team’s infrastructure configuration — zero code changes needed from your side.
+Confirm agent_test works on FGSV297 and we move straight to LibreChat connection.​​​​​​​​​​​​​​​​
