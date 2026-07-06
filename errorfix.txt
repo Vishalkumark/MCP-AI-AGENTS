@@ -1050,3 +1050,22 @@ curl -v https://figpt-mcp-outlook.fichtnergroup.com/health
 
 
 Paste the output.​​​​​​​​​​​​​​​​
+
+
+from fastmcp.server.http import TransportSecuritySettings
+
+mcp = FastMCP(
+    settings.MCP_SERVER_NAME,
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=[
+            "figpt-mcp-outlook.fichtnergroup.com",
+            "localhost",
+            "127.0.0.1",
+        ],
+        allowed_origins=[
+            "https://figpt-mcp-outlook.fichtnergroup.com",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ],
+    )
+)
