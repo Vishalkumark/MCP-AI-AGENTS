@@ -1126,6 +1126,68 @@ mcp = FastMCP(
         )
 
 
+---
+
+    # ----- Plain text formats -----
+    elif file_name_lower.endswith((".txt", ".md", ".log", ".json", ".xml")):
+        # These are already plain text — decode directly, no parser needed.
+        try:
+            text = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            # Fallback to latin-1 if UTF-8 fails (older Windows files)
+            text = file_bytes.decode("latin-1", errors="replace")
+        return {
+            "text": text,
+            "file_type": file_name_lower.rsplit(".", 1)[-1],
+            "used_ocr": False,
+        }
+
+    # ----- CSV -----
+    elif file_name_lower.endswith(".csv"):
+        import csv, io
+        try:
+            text_content = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            text_content = file_bytes.decode("latin-1", errors="replace")
+        # Convert CSV rows to readable pipe-separated text
+        reader = csv.reader(io.StringIO(text_content))
+        rows = [" | ".join(row) for row in reader if any(cell.strip() for cell in row)]
+        return {
+            "text": "\n".join(rows),
+            "file_type": "csv",
+            "used_ocr": False,
+        }
+
+    # ----- Images -----
+    elif file_name_lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")):
+        # Images require OCR to extract any text content.
+        # If OCR is disabled, return a clear message.
+        from config.settings import settings
+        if not settings.OCR_ENABLED:
+            return {
+                "text": (
+                    f"'{file_name}' is an image file. To extract text from "
+                    f"images, OCR must be enabled. Set OCR_ENABLED=true in "
+                    f".env and ensure Tesseract is installed on the server."
+                ),
+                "file_type": "image",
+                "used_ocr": False,
+            }
+        # OCR enabled — run tesseract on the image bytes
+        from PIL import Image
+        import io as _io
+        import pytesseract
+        image = Image.open(_io.BytesIO(file_bytes))
+        extracted = pytesseract.image_to_string(image)
+        return {
+            "text": extracted,
+            "file_type": "image",
+            "used_ocr": True,
+        }
+
+
+
+
 
 
 
