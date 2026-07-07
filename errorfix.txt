@@ -1069,3 +1069,23 @@ mcp = FastMCP(
         ],
     )
 )
+
+
+    # Step 3: Decode the base64 content_bytes field into raw bytes that
+    #         the parsers/ folder can work with directly.
+    # Graph API sometimes returns base64 without proper padding —
+    # add padding characters to make the length a multiple of 4
+    # before decoding, which is what the base64 spec requires.
+    content_bytes_b64 = attachment.content_bytes
+
+    # Handle both string and bytes input from the SDK
+    if isinstance(content_bytes_b64, bytes):
+        content_bytes_b64 = content_bytes_b64.decode("utf-8")
+
+    # Add padding if missing
+    padding_needed = len(content_bytes_b64) % 4
+    if padding_needed:
+        content_bytes_b64 += "=" * (4 - padding_needed)
+
+    file_bytes = base64.b64decode(content_bytes_b64)
+
