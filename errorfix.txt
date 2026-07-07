@@ -1089,3 +1089,44 @@ mcp = FastMCP(
 
     file_bytes = base64.b64decode(content_bytes_b64)
 
+
+---
+
+    # Step 3: Decode attachment content into raw bytes.
+    # The Graph SDK can return content_bytes in three different forms
+    # depending on the file type and SDK version:
+    #   - bytes      : already raw bytes, use directly
+    #   - ASCII str  : base64-encoded string, decode it
+    #   - Unicode str: plain text content returned directly (e.g. .txt files)
+    content_bytes_b64 = attachment.content_bytes
+
+    if isinstance(content_bytes_b64, bytes):
+        # Already raw bytes — use directly
+        file_bytes = content_bytes_b64
+
+    elif isinstance(content_bytes_b64, str):
+        # Check if it's pure ASCII — if so treat as base64
+        try:
+            content_bytes_b64.encode("ascii")
+            # Pure ASCII — treat as base64, fix padding if needed
+            padding_needed = len(content_bytes_b64) % 4
+            if padding_needed:
+                content_bytes_b64 += "=" * (4 - padding_needed)
+            file_bytes = base64.b64decode(content_bytes_b64)
+
+        except UnicodeEncodeError:
+            # Contains non-ASCII — this IS the plain text content
+            # returned directly by the SDK (common for .txt files)
+            file_bytes = content_bytes_b64.encode("utf-8")
+
+    else:
+        raise ValueError(
+            f"Unexpected content_bytes type from Graph SDK: "
+            f"{type(content_bytes_b64)}. Cannot decode attachment."
+        )
+
+
+
+
+
+
