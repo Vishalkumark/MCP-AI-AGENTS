@@ -1186,6 +1186,205 @@ mcp = FastMCP(
         }
 
 
+---
+
+Good decision. Here are the targeted changes.
+
+Changes Required
+tools/email_tools.py
+summarise_email should return raw email content instead of calling the LLM.
+Find the entire summarise_email function body after the docstring:
+
+    try:
+        # Step 1: Reuse the existing Graph fetch — no duplicated logic.
+        msg = await fetch_message_by_id(email_id)
+
+        subject = msg.get("subject", "")
+        sender = msg.get("from", {}).get("emailAddress", {}).get("name", "")
+        body_text = msg.get("body", {}).get("content", "")
+
+        # Step 2: Build a focused prompt for the LLM.
+        prompt = (
+            f"Summarise the following email in 3-4 concise sentences. "
+            f"Focus on key points, any action items, and deadlines.\n\n"
+            f"Subject: {subject}\n"
+            f"From: {sender}\n\n"
+            f"Email body:\n{body_text}"
+        )
+
+        # Step 3: Call the LLM wrapper.
+        summary_text = await generate_summary(prompt)
+
+        return {
+            "subject": subject,
+            "sender": sender,
+            "summary": summary_text,
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="summarise_email", logger=logger)
+
+
+Replace with:
+
+    try:
+        # Fetch the full email content — same as read_email.
+        # Returning raw content lets LibreChat's LLM summarise it,
+        # which produces better results than calling Requesty internally.
+        msg = await fetch_message_by_id(email_id)
+
+        subject = msg.get("subject", "")
+        sender = msg.get("from", {}).get("emailAddress", {}).get("name", "")
+        sender_email = msg.get("from", {}).get("emailAddress", {}).get("address", "")
+        received_date = msg.get("receivedDateTime", "")
+        body_text = msg.get("body", {}).get("content", "")
+
+        return {
+            "subject": subject,
+            "sender": sender,
+            "sender_email": sender_email,
+            "received_date": received_date,
+            "body": body_text,
+            "instruction": (
+                "Please summarise this email in 3-4 concise sentences, "
+                "highlighting key points, action items, and any deadlines."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="summarise_email", logger=logger)
+
+
+Also remove the unused import at the top of email_tools.py:
+Find:
+
+from llm.requesty_client import generate_summary
+
+
+Delete that line entirely.
+
+tools/attachment_tools.py
+summarise_attachment should return extracted text instead of calling the LLM.
+Find the entire summarise_attachment function body after the docstring:
+
+    try:
+        # Step 1: Reuse the same download + parse chain as read_attachment.
+        file_bytes, file_name, content_type = await download_attachment(
+            email_id, attachment_id
+        )
+        parse_result = await parse_attachment(file_bytes, file_name, content_type)
+
+        extracted_text = parse_result["text"]
+
+        # Step 2: Guard against empty extraction.
+        if not extracted_text or not extracted_text.strip():
+            return {
+                "file_name": file_name,
+                "file_type": parse_result["file_type"],
+                "summary": (
+                    "No readable text could be extracted from this "
+                    "attachment. It may be a blank, corrupted, or "
+                    "image-only file that OCR could not process."
+                ),
+            }
+
+        # Step 3: Build a focused summarisation prompt.
+        prompt = (
+            f"Summarise the following document content in 4-5 concise "
+            f"sentences. Highlight key facts, names, dates, or action "
+            f"items if present.\n\n"
+            f"File name: {file_name}\n"
+            f"File type: {parse_result['file_type']}\n\n"
+            f"Document content:\n{extracted_text}"
+        )
+
+        summary_text = await generate_summary(prompt)
+
+        return {
+            "file_name": file_name,
+            "file_type": parse_result["file_type"],
+            "summary": summary_text,
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="summarise_attachment", logger=logger)
+
+
+Replace with:
+
+    try:
+        # Download and parse the attachment — same as read_attachment.
+        # Returning raw extracted text lets LibreChat's LLM summarise it,
+        # which produces better results than calling Requesty internally.
+        file_bytes, file_name, content_type = await download_attachment(
+            email_id, attachment_id
+        )
+        parse_result = await parse_attachment(file_bytes, file_name, content_type)
+
+        extracted_text = parse_result["text"]
+
+        # Guard against empty extraction.
+        if not extracted_text or not extracted_text.strip():
+            return {
+                "file_name": file_name,
+                "file_type": parse_result["file_type"],
+                "extracted_text": "",
+                "instruction": (
+                    "No readable text could be extracted from this attachment. "
+                    "It may be blank, corrupted, or an image-only file."
+                ),
+            }
+
+        return {
+            "file_name": file_name,
+            "file_type": parse_result["file_type"],
+            "extracted_text": extracted_text,
+            "instruction": (
+                "Please summarise this document in 4-5 concise sentences, "
+                "highlighting key facts, names, dates, and any action items."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(
+            exc, tool_name="summarise_attachment", logger=logger
+        )
+
+
+Also remove the unused import at the top of attachment_tools.py:
+Find:
+
+from llm.requesty_client import generate_summary
+
+
+Delete that line entirely.
+
+What changes and why
+
+
+
+|Before                                          |After                                    |
+|------------------------------------------------|-----------------------------------------|
+|`summarise_email` calls Requesty internally     |Returns raw email body + instruction hint|
+|`summarise_attachment` calls Requesty internally|Returns extracted text + instruction hint|
+|Two LLMs running per summarise call             |One LLM only — LibreChat’s               |
+|Requesty cost on every summarise                |Zero Requesty cost for summarisation     |
+
+The instruction field in the returned dict is a hint for LibreChat’s LLM — it tells it exactly what to do with the content without hardcoding prompt logic in your tools.
+
+Restart server after saving:
+
+python server.py
+
+
+Then test in LibreChat:
+
+Summarise my latest email
+
+
+You should see LibreChat’s LLM producing the summary directly from the raw content — no Requesty call in the server logs.​​​​​​​​​​​​​​​​
+
+
 
 
 
