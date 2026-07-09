@@ -1389,5 +1389,9 @@ You should see LibreChat’s LLM producing the summary directly from the raw con
 
 This is a sample line.
 
+So you know the project workspace in VS Code but in Linux. 
+Workspace name shows at my VS Code: FiGPT_Outlook [SSH: FGSV2187.Fitchtnergroup.com]
+Now i have to upload this in Azure DevOps Repo and maintain updates one by one and commit it according to changes. 
+Give me step by step instructions from skratch on how to do it. 
 
 
