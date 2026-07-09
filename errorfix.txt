@@ -1395,3 +1395,413 @@ Now i have to upload this in Azure DevOps Repo and maintain updates one by one a
 Give me step by step instructions from skratch on how to do it. 
 
 
+# Azure DevOps Repository Setup Guide
+
+**Project:** outlook-ai-agent-mcp
+**Source:** FGSV2187 Linux Server (SSH remote in VS Code)
+**Destination:** Azure DevOps Git Repository
+**Status:** Follow steps in order
+
+-----
+
+## Part A — Create the Repository in Azure DevOps
+
+### Step A.1 — Open Azure DevOps
+
+1. Go to `https://dev.azure.com/fichtnergroup` (or your org’s DevOps URL)
+1. Log in with your Company Microsoft account
+1. Select your **Project** (or create a new one if needed)
+
+### Step A.2 — Create a new repository
+
+1. In the left sidebar click **Repos**
+1. Click the repository dropdown at the top → **+ New repository**
+1. Fill in:
+   
+   ```
+   Repository type : Git
+   Repository name : outlook-ai-agent-mcp
+   Add a README   : No (uncheck — we already have our own files)
+   ```
+1. Click **Create**
+1. You will land on an empty repo page — **copy the HTTPS clone URL**
+   shown on screen. It will look like:
+   
+   ```
+   https://fichtnergroup@dev.azure.com/fichtnergroup/YourProject/_git/outlook-ai-agent-mcp
+   ```
+   
+   Keep this URL — you need it in Step C.
+
+-----
+
+## Part B — Configure Git on FGSV2187
+
+All commands below are run in your VS Code terminal connected to
+FGSV2187 (the SSH remote workspace).
+
+### Step B.1 — Check if Git is installed
+
+```bash
+git --version
+```
+
+Expected output: `git version 2.x.x`
+
+If not installed:
+
+```bash
+sudo apt update && sudo apt install git -y
+```
+
+### Step B.2 — Set your Git identity
+
+This tags every commit with your name and email — required by Azure DevOps.
+
+```bash
+git config --global user.name "Your Full Name"
+git config --global user.email "your.email@fichtnergroup.com"
+```
+
+Verify:
+
+```bash
+git config --global --list
+```
+
+Expected output:
+
+```
+user.name=Your Full Name
+user.email=your.email@fichtnergroup.com
+```
+
+-----
+
+## Part C — Initialise Git in Your Project
+
+### Step C.1 — Navigate to project root
+
+```bash
+cd /opt/FiGPT_OutlookMCP
+```
+
+### Step C.2 — Initialise Git repository
+
+```bash
+git init
+```
+
+Expected output:
+
+```
+Initialized empty Git repository in /opt/FiGPT_OutlookMCP/.git/
+```
+
+### Step C.3 — Verify your .gitignore is correct
+
+```bash
+cat .gitignore
+```
+
+Make sure these lines are present (add any missing ones):
+
+```gitignore
+# Virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets — never commit
+.env
+
+# Temp attachment files
+temp_attachments/*
+!temp_attachments/.gitkeep
+
+# VS Code
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test tokens and output files
+bin/token.json
+bin/agent_output.txt
+bin/*.txt
+```
+
+### Step C.4 — Add the Azure DevOps remote
+
+Replace the URL below with the one you copied in Step A.2:
+
+```bash
+git remote add origin https://fichtnergroup@dev.azure.com/fichtnergroup/YourProject/_git/outlook-ai-agent-mcp
+```
+
+Verify it was added:
+
+```bash
+git remote -v
+```
+
+Expected output:
+
+```
+origin  https://fichtnergroup@dev.azure.com/fichtnergroup/YourProject/_git/outlook-ai-agent-mcp (fetch)
+origin  https://fichtnergroup@dev.azure.com/fichtnergroup/YourProject/_git/outlook-ai-agent-mcp (push)
+```
+
+-----
+
+## Part D — First Commit and Push
+
+### Step D.1 — Check what will be committed
+
+```bash
+git status
+```
+
+You will see a long list of untracked files. Verify that `.env` and
+`bin/token.json` are NOT in the list — if they appear, your `.gitignore`
+needs fixing before proceeding.
+
+### Step D.2 — Stage all files
+
+```bash
+git add .
+```
+
+### Step D.3 — Verify what is staged
+
+```bash
+git status
+```
+
+Check the list one more time. Confirm:
+
+- `.env` is NOT listed
+- `bin/token.json` is NOT listed
+- `.venv/` folder is NOT listed
+- All your source files ARE listed (server.py, tools/, graph/, etc.)
+
+### Step D.4 — Create the first commit
+
+```bash
+git commit -m "Initial commit — Phase 1 complete
+
+- FastMCP server with 12 MCP tools
+- Microsoft Graph API integration (Mail, Calendar, Attachments)
+- Delegated OAuth authentication via LibreChat headers
+- Attachment parsers: PDF, DOCX, PPTX, XLSX, TXT, CSV, MD
+- Email tools: list, read, search, search_advanced, paged, export
+- Calendar tools: list events
+- Attachment tools: list, read, summarise
+- Utils: logger, error handler, date utils
+- Tests: 21 tests all passing
+- Deployed on FGSV297 behind nginx reverse proxy"
+```
+
+### Step D.5 — Push to Azure DevOps
+
+```bash
+git push -u origin main
+```
+
+If your default branch is `master` instead of `main`:
+
+```bash
+git push -u origin master
+```
+
+**Azure DevOps will ask for credentials:**
+
+- Username: your Company email
+- Password: use a **Personal Access Token (PAT)** — NOT your account
+  password (Azure DevOps doesn’t accept passwords for Git push)
+
+-----
+
+## Part E — Create a Personal Access Token (PAT)
+
+You need this for the Git push credential above.
+
+### Step E.1 — Generate a PAT in Azure DevOps
+
+1. Go to Azure DevOps → top right corner → click your **profile icon**
+1. Click **Personal access tokens**
+1. Click **+ New Token**
+1. Fill in:
+   
+   ```
+   Name        : outlook-ai-agent-mcp-git
+   Organisation: your org
+   Expiry      : 90 days (or as per your company policy)
+   Scopes      : Code → Read & Write  (check this only)
+   ```
+1. Click **Create**
+1. **Copy the token immediately** — it’s shown only once
+1. When Git asks for password during push, paste this token
+
+### Step E.2 — Optional: Save credentials so you’re not asked every time
+
+```bash
+git config --global credential.helper store
+```
+
+Then push once — Git will ask for credentials once and remember them.
+Note: This stores the PAT in plaintext at `~/.git-credentials`. Acceptable
+for a server you control. If your security policy is stricter, skip this
+and enter the PAT each time.
+
+-----
+
+## Part F — Ongoing Workflow (How to Commit Future Changes)
+
+Every time you make a change to the code and want to save it to Azure DevOps:
+
+### Workflow for a single file change
+
+```bash
+cd /opt/FiGPT_OutlookMCP
+
+# See what changed
+git status
+
+# Stage the specific file changed
+git add tools/email_tools.py
+
+# Commit with a clear message
+git commit -m "feat: add search_emails_advanced with date range filter"
+
+# Push to Azure DevOps
+git push
+```
+
+### Workflow for multiple file changes
+
+```bash
+# Stage everything changed
+git add .
+
+# Or stage specific files
+git add tools/email_tools.py graph/mail_client.py
+
+# Commit
+git commit -m "feat: add pagination and export tools (Points 4 and 5)"
+
+# Push
+git push
+```
+
+### Check commit history anytime
+
+```bash
+git log --oneline
+```
+
+-----
+
+## Part G — Commit Message Convention
+
+Use this format for clean, readable history in Azure DevOps:
+
+|Prefix     |When to use        |Example                                                   |
+|-----------|-------------------|----------------------------------------------------------|
+|`feat:`    |New tool or feature|`feat: add list_emails_paged tool`                        |
+|`fix:`     |Bug fix            |`fix: base64 padding error in attachment download`        |
+|`auth:`    |Auth related       |`auth: add X-Fichtner-Authorization header support`       |
+|`config:`  |Config/env change  |`config: update REQUESTY_PRIMARY_MODEL in .env`           |
+|`docs:`    |Documentation      |`docs: add Phase 1 execution guide`                       |
+|`test:`    |Test changes       |`test: fix pdf parser test for PyMuPDF 1.24+`             |
+|`refactor:`|Code cleanup       |`refactor: remove internal LLM calls from summarise tools`|
+|`deploy:`  |Deployment change  |`deploy: add FASTMCP_HOST env var for nginx 421 fix`      |
+
+-----
+
+## Part H — Suggested Branch Strategy (Simple, Solo Developer)
+
+Since you’re the only developer right now:
+
+```
+main (or master)
+  └── your commits go directly here
+```
+
+When Phase 2 begins or another developer joins:
+
+```
+main
+  ├── feature/phase2-calendar-write
+  ├── feature/phase2-sent-items
+  └── hotfix/attachment-read-error
+```
+
+Create a branch:
+
+```bash
+git checkout -b feature/phase2-calendar-write
+```
+
+Merge back to main when done:
+
+```bash
+git checkout main
+git merge feature/phase2-calendar-write
+git push
+```
+
+-----
+
+## Part I — Quick Reference Card
+
+```bash
+# Daily workflow
+git status                          # what changed?
+git add .                           # stage all changes
+git add <file>                      # stage one file
+git commit -m "type: description"   # commit
+git push                            # push to Azure DevOps
+
+# Check history
+git log --oneline                   # short commit history
+git log --oneline -10               # last 10 commits
+
+# Undo staged file (before commit)
+git restore --staged <file>
+
+# Undo last commit (keep changes)
+git reset --soft HEAD~1
+
+# See what changed in a file
+git diff <file>
+```
+
+-----
+
+## What NOT to commit — ever
+
+|File/Folder           |Reason                                                            |
+|----------------------|------------------------------------------------------------------|
+|`.env`                |Contains Azure secrets and API keys                               |
+|`bin/token.json`      |Contains your personal Microsoft OAuth token                      |
+|`.venv/`              |Python packages — recreated with `pip install -r requirements.txt`|
+|`__pycache__/`        |Python bytecode — auto-generated                                  |
+|`temp_attachments/*`  |Temporary downloaded files                                        |
+|`bin/agent_output.txt`|Local test output                                                 |
+
+All of these are already in `.gitignore`. The `git status` check in
+Step D.3 is your safety net before every push.
+
+-----
+
+*Follow Parts A through E for first-time setup. Use Part F for all
+future commits. Done.*
