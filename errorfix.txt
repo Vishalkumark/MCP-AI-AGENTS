@@ -1805,3 +1805,111 @@ Step D.3 is your safety net before every push.
 
 *Follow Parts A through E for first-time setup. Use Part F for all
 future commits. Done.*
+
+
+---
+
+Suggest me on:
+==============
+I tried Librechat can generate charts but it was svg code. Is it possible to generate images, charts - pie, bar, line. As files?
+How to start the MCP Server ?
+	- as Daemon
+	- Start Stop Script
+	- best practice under which user ?
+		- create user ?
+		- service user under which mcp is running.
+3. How do validate the output (Correctness, Accurate) ? Prevent hallucinations? Verify the output, cross check and then response.
+4. In this project where are we adding the guardrails, dos and dont's, AI governance, security and human-in-loop events? How do we add these what would be the approach in pour constrained environment. Also look for webpages on how to add these?
+
+Key Areas for Guardrails, Governance, and Security**
+To integrate **guardrails, governance, security, and HITL**, we must focus on the following areas:
+
+| **Area**               | **Purpose**                                                                 | **Implementation Approach**                                                      |
+|------------------------|-----------------------------------------------------------------------------|----------------------------------------------------------------------------------|
+| **Input Validation**   | Prevent malicious or malformed inputs from reaching tools or APIs.         | Validate all inputs to tools (e.g., email IDs, search queries, attachment IDs).   |
+| **Rate Limiting**      | Prevent abuse or excessive API calls to Microsoft Graph or Requesty.AI.    | Implement rate limiting at the MCP server level.                                  |
+| **Authentication & Authorization** | Ensure only authorized users can access tools and data.        | Leverage delegated OAuth and validate token scopes.                               |
+| **Audit Logging**      | Track tool usage, inputs, outputs, and user actions for compliance.        | Log all tool calls, errors, and sensitive actions.                                |
+| **Data Privacy**       | Ensure sensitive data (e.g., emails, attachments) is handled securely.     | Mask or redact sensitive data in logs and summaries.                              |
+| **Human-in-the-Loop (HITL)** | Allow human review for high-risk actions (e.g., sending emails, deleting events). | Introduce HITL hooks for critical tools.                             |
+| **LLM Guardrails**     | Prevent the LLM from generating harmful, biased, or inappropriate content. | Use prompt engineering, output filtering, and Requesty.AI’s built-in guardrails.  |
+| **Error Handling**     | Gracefully handle errors and prevent leakage of sensitive information.     | Implement structured error responses and sanitize error messages.                 |
+| **Compliance**         | Ensure adherence to GDPR, ISO 27001, and other relevant standards.         | Document data flows, retention policies, and user consent mechanisms.             |
+
+---
+
+Lets go to phase 2 and add other tools as well. Give me a detailed md file. Starts from scratch tell me all pre-requisites, approvals required, access needed, how to get them. Every this step by step to achieve the below completely. 
+
+For the code: Segrated into two part and give me all the relevant code file now in this md. Second i'll say then you can generate. make sure the code has proper documentations, doc strings, template, tone et., as earlier and follows all such corrections based on our past chats.
+
+Calender event check
+find availability
+draft invite
+
+Tools
+======
+
+list-emails		List recent emails from inbox
+list-emails-draft	Only draft the email, Draft multiple emails at once.
+search-emails		Search emails with filters
+mark-as-read		Mark email as read/unread
+list-events		List calendar events
+Schedule-meeting	Find the common time slots of the people
+draft-invite		Write context/about the meeting and but draft
+create-folder		Create mail folder
+list-folders		List mail folders
+move-emails		Move emails between folders
+Task extraction 	read mails and list out neat to do lists
+Semantic search over email history
+
+
+No need to add send mail. Drafting is sufficient.
+
+Drafting rules:
+Write professional responses.
+The tone must always be polite.
+Preferably keep short, crisp but elaborative whenever necessary.
+for meeting invite drafts always add agenda, description and clear meeting header.
+Meeting invites by default 30 mins only.
+
+---
+
+Prompt Library:
+In libreChat if the user types "/" then i shows predefined prompts(Prompt name + full Prompt).
+Imagine all the possible use cases, needs of a user, daily activities and basic to high level required prompts. 
+Create set of pre-defined prompts for each such scenario. A list of all such prompt in a md file. i'll create one by one each manual in LibrChat.
+Some simple examples below. The prompts can be much detailed and elaborative as well.
+
+/my-email-list: List all my recent email from my inbox
+/my-email-summary: flag each with a one-line summary of what's being asked.
+/my-find-meetings: List all my meetings of the day with its agenda
+/my-email-unimportant: No action required — archive or move to a Reading folder. Show me the plan before applying any moves.
+/my-email-priorty: Read all my recent emails and list out the high priority once, Needs my attention this week but not urgent — list with subject and sender.
+/my-dail-recap: Triage everything in my inbox from the morning
+/my-weekly-recap: Triage everything in my inbox for this week
+/my-email-task-priority: Read all my recent emails and highlight all the important tasks for the day
+/ooo-work: As i was out of office list all the unread message and list all the important ones alone.
+etc.,
+Scan my inbox and identify everything that needs a response from me today. Rank by urgency:
+	(1) Blocking someone else's work — queue a brief holding reply for each so they know I've seen it,
+	(2) Time-sensitive decision required — draft my response options so I can choose and send,
+	(3) Routine reply needed — list with a suggested one-line reply I can approve. Show all drafts before anything is sent.
+
+
+
+Done:
+read-email		Read email content
+// Limitiations
+- list emails ? Which one ? which timeframe ? What is the default
+		- List my emails for today -> 5x // 200x
+		- list the last 200 emails
+// Output
+	- List always in markdown
+	- Email maybe also in markdown .. structures
+// We look at the description what is when trigged.
+
+List all events from today
+
+Action:
+mark-read		Mark as read
+mark-unread		Mark as unread
