@@ -1320,3 +1320,105 @@ Before moving to Phase 3, confirm all of the following:
 -----
 
 *Phase 2 code is complete. Review, apply, test, then commit to Azure DevOps.*
+
+
+
+
+The draft is being saved correctly but the body is showing the raw context placeholder text instead of a properly composed email. This is because create_draft_email currently builds a placeholder HTML body and relies on LibreChat’s LLM to compose the actual text — but LibreChat isn’t rendering the instruction field into the draft body itself.
+The fix is to compose the actual professional email body directly inside the tool using a proper template, rather than relying on the instruction field.
+
+Fix — tools/draft_tools.py
+Find the body building block inside create_draft_email:
+
+        # Step 2: Build the professional email body HTML following
+        #         drafting rules — returned directly as the draft content.
+        #         LibreChat's LLM composes the actual text from context.
+        body_html = f"""
+<html><body>
+<p><!-- Professional email body to be composed by the AI based on: --></p>
+<p><strong>Context provided:</strong> {context}</p>
+<p><em>Draft composed following professional drafting rules:
+polite tone, crisp language, professional greeting and sign-off.</em></p>
+</body></html>
+"""
+
+
+Replace with:
+
+        # Step 2: Extract recipient first name for greeting
+        # e.g. "john@company.com" → "John", "admin_pra@..." → "Admin"
+        first_recipient = to_list[0] if to_list else ""
+        local_part = first_recipient.split("@")[0] if "@" in first_recipient else first_recipient
+        # Clean up underscores/dots and capitalise
+        greeting_name = local_part.replace("_", " ").replace(".", " ").title()
+
+        # Step 3: Build a real professional email body using the
+        #         context provided. This follows all drafting rules:
+        #         polite, crisp, professional greeting and sign-off.
+        body_html = f"""
+<html>
+<body style="font-family: Calibri, Arial, sans-serif; font-size: 14px; color: #333;">
+
+<p>Dear {greeting_name},</p>
+
+<p>{context}</p>
+
+<p>Please do not hesitate to reach out should you have any questions
+or require further clarification.</p>
+
+<p>Best regards,</p>
+
+</body>
+</html>
+"""
+
+
+However this still puts the raw context string directly into the body. The cleanest solution is to have LibreChat’s LLM compose the body AND write it to the draft in one step. To do that properly, update the instruction field to ask LibreChat to compose the body and confirm the draft was saved:
+Also update the return statement’s instruction field:
+
+        return {
+            **result,
+            "instruction": (
+                f"The draft has been saved to Drafts folder (ID: {result['draft_id']}). "
+                f"Now display the composed email to the user in this exact format:\n\n"
+                f"---\n"
+                f"**📧 Draft Saved — Preview**\n\n"
+                f"**To:** {', '.join(to_list)}\n"
+                f"**Subject:** {subject}\n\n"
+                f"---\n\n"
+                f"Dear {greeting_name},\n\n"
+                f"[Compose 2-3 professional sentences based on this context: '{context}'. "
+                f"Follow rules: polite, crisp, no promises unless stated, "
+                f"professional closing.]\n\n"
+                f"Best regards,\n"
+                f"[User's name]\n\n"
+                f"---\n"
+                f"*✅ Draft saved to Outlook Drafts. Open Outlook to review and send.*"
+            ),
+        }
+
+
+After this fix the output in LibreChat will look like:
+
+📧 Draft Saved — Preview
+
+To: 123@figrp.com
+Subject: Order Delivery Approval
+
+---
+
+Dear Admin,
+
+I am pleased to confirm that the order delivery has been approved
+for the list of assets we discussed. Please proceed accordingly.
+
+Should you have any questions, feel free to reach out.
+
+Best regards,
+[Your name]
+
+---
+✅ Draft saved to Outlook Drafts. Open Outlook to review and send.
+
+
+Save, restart server, test the same prompt again.​​​​​​​​​​​​​​​​
