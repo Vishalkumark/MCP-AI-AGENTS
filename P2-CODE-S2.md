@@ -1422,3 +1422,207 @@ Best regards,
 
 
 Save, restart server, test the same prompt again.​​​​​​​​​​​​​​​​
+
+
+---
+
+I see two problems clearly:
+	1.	The body is still showing raw context text instead of a properly composed email
+	2.	Previous email content is bleeding into the new draft — leftover HTML fragments from the previous draft body
+Both happen because the draft body is built as a static HTML template with the context dropped in raw, not actually composed by the LLM.
+The real fix is to have LibreChat’s LLM compose the full email body BEFORE the draft is created, not after. We do this by splitting the tool into two steps internally.
+
+Complete fix — tools/draft_tools.py
+Replace the entire create_draft_email function body:
+
+@mcp.tool
+async def create_draft_email(
+    to_emails: str,
+    subject: str,
+    context: str,
+    cc_emails: str = "",
+) -> dict:
+    """
+    Draft a new professional email and save it to the Drafts folder.
+    Does NOT send the email. The user can review and send from Outlook.
+
+    Use this tool when the user asks things like:
+    - "Draft an email to john@company.com about the project delay"
+    - "Write an email to the team about tomorrow's meeting"
+    - "Compose a professional email to the client about the invoice"
+
+    Args:
+        to_emails (str): Comma-separated recipient email addresses.
+        subject (str): The email subject line.
+        context (str): Description of what the email should say.
+        cc_emails (str): Optional comma-separated CC addresses.
+
+    Returns:
+        dict with draft ID, composed email preview, and confirmation.
+    """
+    logger.info(f"Tool called: create_draft_email (to={to_emails}, subject={subject})")
+
+    try:
+        # Step 1: Parse recipient lists
+        to_list = [e.strip() for e in to_emails.split(",") if e.strip()]
+        cc_list = [e.strip() for e in cc_emails.split(",") if e.strip()] if cc_emails else []
+
+        if not to_list:
+            return {
+                "error": True,
+                "message": "No valid recipient email addresses provided.",
+            }
+
+        # Step 2: Derive greeting name from first recipient address
+        # e.g. "admin_1234@figrp.com" → "Admin 1234"
+        first_recipient = to_list[0]
+        local_part = first_recipient.split("@")[0]
+        greeting_name = local_part.replace("_", " ").replace(".", " ").title()
+
+        # Step 3: Compose the professional email body using Requesty.AI.
+        # We call the LLM HERE — before saving the draft — so the
+        # actual composed text goes into the draft body, not placeholders.
+        from llm.requesty_client import generate_summary
+
+        composition_prompt = (
+            f"Write a professional business email body based on the following context.\n\n"
+            f"Drafting rules:\n"
+            f"- Tone: Professional, polite, courteous\n"
+            f"- Length: Concise — no unnecessary filler\n"
+            f"- Greeting: Start with 'Dear {greeting_name},'\n"
+            f"- Closing: End with 'Best regards,' on its own line\n"
+            f"- Do NOT include a subject line — body only\n"
+            f"- Do NOT include the sender's name in the closing\n"
+            f"- Do NOT add promises, dates, or facts not in the context\n"
+            f"- Correct any grammar issues in the context\n"
+            f"- Output plain text only — no HTML tags\n\n"
+            f"Context to base the email on:\n{context}"
+        )
+
+        composed_text = await generate_summary(composition_prompt)
+
+        # Step 4: Wrap composed plain text in clean HTML for the draft
+        # Convert newlines to paragraph tags for proper email rendering
+        paragraphs = [
+            p.strip() for p in composed_text.split("\n") if p.strip()
+        ]
+        body_html = (
+            '<html><body style="font-family: Calibri, Arial, sans-serif; '
+            'font-size: 14px; color: #333;">'
+            + "".join(f"<p>{p}</p>" for p in paragraphs)
+            + "</body></html>"
+        )
+
+        # Step 5: Save the composed draft to Outlook Drafts folder
+        result = await create_draft(
+            to_emails=to_list,
+            subject=subject,
+            body_html=body_html,
+            cc_emails=cc_list if cc_list else None,
+        )
+
+        # Step 6: Build a clean preview for display in LibreChat
+        draft_preview = (
+            f"---\n"
+            f"**📧 Draft Saved to Outlook**\n\n"
+            f"**To:** {', '.join(to_list)}\n"
+            f"{'**CC:** ' + ', '.join(cc_list) + chr(10) if cc_list else ''}"
+            f"**Subject:** {subject}\n\n"
+            f"---\n\n"
+            f"{composed_text}\n\n"
+            f"---\n"
+            f"*✅ Draft saved to Outlook Drafts. Open Outlook to review and send.*"
+        )
+
+        return {
+            "draft_id": result["draft_id"],
+            "subject": result["subject"],
+            "to": to_list,
+            "status": result["status"],
+            "draft_preview": draft_preview,
+            "instruction": (
+                "Display the 'draft_preview' field exactly as markdown. "
+                "Do not rewrite or reformat the email body — show it as given."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="create_draft_email", logger=logger)
+
+
+Also fix create_draft_reply the same way
+The same problem exists there. Find the reply body building block:
+
+        # Step 2: Build the reply body HTML
+        reply_body_html = f"""
+<html><body>
+<p><em>[Professional reply composed based on context: {reply_context}]</em></p>
+...
+
+
+Replace with:
+
+        # Step 2: Compose the professional reply body using the LLM
+        from llm.requesty_client import generate_summary
+
+        composition_prompt = (
+            f"Write a professional email reply based on the following context.\n\n"
+            f"Drafting rules:\n"
+            f"- Tone: Professional, polite, courteous\n"
+            f"- Length: Concise — no unnecessary filler\n"
+            f"- Greeting: Start with 'Dear {original_sender},'\n"
+            f"- Closing: End with 'Best regards,' on its own line\n"
+            f"- Do NOT include a subject line — body only\n"
+            f"- Do NOT include the sender's name in the closing\n"
+            f"- Do NOT add promises, dates, or facts not in the context\n"
+            f"- Output plain text only — no HTML tags\n\n"
+            f"Original email from: {original_sender}\n"
+            f"Original subject: {original_subject}\n\n"
+            f"Reply context:\n{reply_context}"
+        )
+
+        composed_reply = await generate_summary(composition_prompt)
+
+        # Wrap in clean HTML
+        paragraphs = [p.strip() for p in composed_reply.split("\n") if p.strip()]
+        reply_body_html = (
+            '<html><body style="font-family: Calibri, Arial, sans-serif; '
+            'font-size: 14px; color: #333;">'
+            + "".join(f"<p>{p}</p>" for p in paragraphs)
+            + '<hr><p><em>Original message from: '
+            + original_sender
+            + "</em></p></body></html>"
+        )
+
+
+And update the return:
+
+        reply_preview = (
+            f"---\n"
+            f"**📧 Reply Draft Saved**\n\n"
+            f"**Re:** {original_subject}\n"
+            f"**To:** {original_sender}\n\n"
+            f"---\n\n"
+            f"{composed_reply}\n\n"
+            f"---\n"
+            f"*✅ Reply draft saved to Outlook Drafts. Open Outlook to review and send.*"
+        )
+
+        return {
+            **result,
+            "original_subject": original_subject,
+            "original_sender": original_sender,
+            "reply_preview": reply_preview,
+            "instruction": (
+                "Display the 'reply_preview' field exactly as markdown. "
+                "Do not rewrite or reformat the email body."
+            ),
+        }
+
+
+Save, restart server, test again with the same prompt. The draft in Outlook will now contain the properly composed email, and LibreChat will show the clean preview.​​​​​​​​​​​​​​​​
+
+
+
+
+
