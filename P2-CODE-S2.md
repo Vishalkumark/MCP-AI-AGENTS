@@ -1623,6 +1623,176 @@ And update the return:
 Save, restart server, test again with the same prompt. The draft in Outlook will now contain the properly composed email, and LibreChat will show the clean preview.​​​​​​​​​​​​​​​​
 
 
+You’re right. The fix is simpler — don’t compose inside the tool at all. Just pass the context cleanly to LibreChat’s LLM and let it compose and display the email. The draft saves a clean structured body.
 
+Fix — tools/draft_tools.py
+Replace the entire create_draft_email function body:
+
+@mcp.tool
+async def create_draft_email(
+    to_emails: str,
+    subject: str,
+    context: str,
+    cc_emails: str = "",
+) -> dict:
+    """
+    Draft a new professional email and save it to the Drafts folder.
+    Does NOT send the email. The user can review and send from Outlook.
+
+    Use this tool when the user asks things like:
+    - "Draft an email to john@company.com about the project delay"
+    - "Write an email to the team about tomorrow's meeting"
+    - "Compose a professional email to the client about the invoice"
+
+    Args:
+        to_emails (str): Comma-separated recipient email addresses.
+        subject (str): The email subject line.
+        context (str): Description of what the email should say.
+        cc_emails (str): Optional comma-separated CC addresses.
+
+    Returns:
+        dict with draft ID and instruction for LibreChat to compose
+        and display the email body.
+    """
+    logger.info(
+        f"Tool called: create_draft_email (to={to_emails}, subject={subject})"
+    )
+
+    try:
+        # Step 1: Parse recipient lists
+        to_list = [e.strip() for e in to_emails.split(",") if e.strip()]
+        cc_list = [
+            e.strip() for e in cc_emails.split(",") if e.strip()
+        ] if cc_emails else []
+
+        if not to_list:
+            return {
+                "error": True,
+                "message": "No valid recipient email addresses provided.",
+            }
+
+        # Step 2: Derive greeting name from first recipient address
+        # e.g. "admin_1234@figrp.com" → "Admin 1234"
+        first_recipient = to_list[0]
+        local_part = first_recipient.split("@")[0]
+        greeting_name = local_part.replace("_", " ").replace(".", " ").title()
+
+        # Step 3: Save a clean placeholder draft to Outlook Drafts.
+        # The actual composed body will be shown to the user by
+        # LibreChat's LLM via the instruction field below.
+        # The Outlook draft body is intentionally minimal — it acts
+        # as a saved record, not the display vehicle.
+        body_html = (
+            f'<html><body style="font-family: Calibri, Arial, sans-serif; '
+            f'font-size: 14px; color: #333;">'
+            f'<p>Dear {greeting_name},</p>'
+            f'<p>{context}</p>'
+            f'<p>Best regards,</p>'
+            f'</body></html>'
+        )
+
+        result = await create_draft(
+            to_emails=to_list,
+            subject=subject,
+            body_html=body_html,
+            cc_emails=cc_list if cc_list else None,
+        )
+
+        # Step 4: Build the header block to display in LibreChat.
+        # LibreChat's LLM will compose the actual email body from
+        # the context and display it after this header.
+        header = (
+            f"**📧 Draft Saved to Outlook**\n\n"
+            f"| Field | Details |\n"
+            f"|---|---|\n"
+            f"| **To** | {', '.join(to_list)} |\n"
+            + (f"| **CC** | {', '.join(cc_list)} |\n" if cc_list else "")
+            + f"| **Subject** | {subject} |\n"
+            f"| **Status** | ✅ Saved to Drafts folder |\n\n"
+            f"---\n"
+        )
+
+        return {
+            "draft_id": result["draft_id"],
+            "subject": subject,
+            "to": to_list,
+            "cc": cc_list,
+            "greeting_name": greeting_name,
+            "status": "Draft saved to Outlook Drafts folder",
+            "display_header": header,
+            "instruction": (
+                f"Display 'display_header' as markdown first. "
+                f"Then compose and display a professional email body "
+                f"following these strict rules:\n"
+                f"- Start with: Dear {greeting_name},\n"
+                f"- Write 2-3 concise professional sentences based on "
+                f"this context: '{context}'\n"
+                f"- Fix any grammar issues in the context\n"
+                f"- Do NOT add promises, dates, or facts not in the context\n"
+                f"- End with: Best regards,\n"
+                f"- Do NOT include a name after the closing\n"
+                f"- After the email body add a new line: "
+                f"*✅ Open Outlook to review and send this draft.*"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(
+            exc, tool_name="create_draft_email", logger=logger
+        )
+
+
+Do the same for create_draft_reply
+Replace the instruction return in create_draft_reply:
+
+        return {
+            **result,
+            "original_subject": original_subject,
+            "original_sender": original_sender,
+            "instruction": (
+                f"Display this header as markdown:\n\n"
+                f"**📧 Reply Draft Saved**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **Re** | {original_subject} |\n"
+                f"| **To** | {original_sender} |\n"
+                f"| **Status** | ✅ Saved to Drafts folder |\n\n"
+                f"---\n\n"
+                f"Then compose and display a professional reply following "
+                f"these strict rules:\n"
+                f"- Start with: Dear {original_sender},\n"
+                f"- Write 2-3 concise professional sentences based on: "
+                f"'{reply_context}'\n"
+                f"- Reference the original email context where relevant\n"
+                f"- Fix any grammar issues\n"
+                f"- Do NOT add promises, dates, or facts not mentioned\n"
+                f"- End with: Best regards,\n"
+                f"- After the email body add: "
+                f"*✅ Open Outlook to review and send this draft.*"
+            ),
+        }
+
+
+Why this works now
+
+User prompt
+    │
+    ▼
+LibreChat LLM → calls create_draft_email tool
+    │
+    ▼
+Tool saves draft to Outlook (minimal placeholder body)
+Returns: header + instruction for LibreChat to compose display
+    │
+    ▼
+LibreChat LLM reads instruction → composes professional email
+Displays: header table + composed email body in chat
+    │
+    ▼
+User sees clean email in chat
+Outlook Drafts has the saved record
+
+
+No Requesty, no external LLM — LibreChat’s own model composes everything from the instruction. Save, restart, test.​​​​​​​​​​​​​​​​
 
 
