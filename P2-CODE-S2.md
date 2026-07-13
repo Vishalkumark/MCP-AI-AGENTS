@@ -2120,6 +2120,111 @@ async def compose_reply(
     except Exception as exc:
         return format_tool_error(exc, tool_name="compose_reply", logger=logger)
 
+---
 
+async def flag_message(message_id: str, flag_status: str = "flagged") -> dict:
+    """
+    Flag or unflag an email.
+
+    Args:
+        message_id (str): Graph API ID of the email.
+        flag_status (str): "flagged", "complete", or "notFlagged".
+
+    Returns:
+        dict: Confirmation of the flag status change.
+    """
+    logger.info(f"Flagging message {message_id} as '{flag_status}'")
+    client = get_graph_client()
+
+    from msgraph.generated.models.message import Message
+    from msgraph.generated.models.followup_flag import FollowupFlag
+    from msgraph.generated.models.followup_flag_status import FollowupFlagStatus
+
+    # Map string to SDK enum
+    status_map = {
+        "flagged": FollowupFlagStatus.Flagged,
+        "complete": FollowupFlagStatus.Complete,
+        "notflagged": FollowupFlagStatus.NotFlagged,
+        "not flagged": FollowupFlagStatus.NotFlagged,
+        "unflagged": FollowupFlagStatus.NotFlagged,
+    }
+
+    flag_enum = status_map.get(flag_status.lower(), FollowupFlagStatus.Flagged)
+
+    update = Message()
+    update.flag = FollowupFlag()
+    update.flag.flag_status = flag_enum
+
+    await client.me.messages.by_message_id(message_id).patch(update)
+
+    return {
+        "message_id": message_id,
+        "flag_status": flag_status,
+        "status": f"Email flagged as '{flag_status}' successfully",
+    }
+
+
+---
+
+@mcp.tool
+async def flag_email(
+    email_id: str,
+    flag_status: str = "flagged",
+) -> dict:
+    """
+    Flag an email for follow-up, mark it complete, or remove the flag.
+
+    Use this tool when the user asks things like:
+    - "Flag this email for follow-up"
+    - "Mark this email as complete"
+    - "Remove the flag from this email"
+    - "Unflag this message"
+
+    Note: Pinning emails is not supported via Microsoft Graph API —
+    pinning is a local Outlook client feature only.
+
+    Args:
+        email_id (str): Graph API ID of the email to flag.
+                         Obtained from list_emails or search_emails.
+        flag_status (str): The flag status to set:
+                            - "flagged"    → flag for follow-up (default)
+                            - "complete"   → mark follow-up as done
+                            - "notFlagged" → remove flag entirely
+
+    Returns:
+        dict with confirmation of the flag status change.
+    """
+    logger.info(
+        f"Tool called: flag_email "
+        f"(email_id={email_id[:20]}..., flag_status={flag_status})"
+    )
+
+    try:
+        from graph.draft_client import flag_message
+
+        result = await flag_message(
+            message_id=email_id,
+            flag_status=flag_status,
+        )
+
+        # Map status to display label
+        display_map = {
+            "flagged": "🚩 Flagged for follow-up",
+            "complete": "✅ Follow-up marked complete",
+            "notflagged": "⬜ Flag removed",
+            "unflagged": "⬜ Flag removed",
+        }
+        display = display_map.get(flag_status.lower(), f"Flag set to '{flag_status}'")
+
+        return {
+            **result,
+            "display": display,
+            "instruction": f"Inform the user: {display}",
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="flag_email", logger=logger)
+
+---
 
 
