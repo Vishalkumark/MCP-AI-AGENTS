@@ -1796,3 +1796,255 @@ Outlook Drafts has the saved record
 No Requesty, no external LLM — LibreChat’s own model composes everything from the instruction. Save, restart, test.​​​​​​​​​​​​​​​​
 
 
+
+
+Great thinking. Let me analyse all 4 options honestly before we touch any code.
+
+Analysis of All 4 Options
+Option 1 — Splitter algorithm to restrict unnecessary content
+How it works: Post-process the draft body before saving — strip anything that looks like metadata, headers, or placeholder text using regex or string parsing.
+Problem: We’d be fighting our own output. The “unwanted headers” are coming from the instruction field bleeding into what LibreChat passes back to the tool — a splitter would need to be perfectly calibrated and would break on edge cases. Fragile.
+Verdict: ❌ Wrong layer to fix this. Treats the symptom not the cause.
+
+Option 2 — Generate output as plain text block then push to draft
+How it works: LibreChat’s LLM generates the email as a clean text block first, then a second tool call pushes that exact text to the draft.
+Problem: MCP tools are stateless — there’s no way to chain “generate then push” across two separate tool calls unless the user triggers both. LibreChat would need to call generate_email_text first, capture the output, then call create_draft with it. This requires a two-step agent loop which LibreChat supports but isn’t guaranteed to execute cleanly every time.
+Verdict: ⚠️ Works in theory but introduces sequencing risk.
+
+Option 3 — Pre-defined Outlook-aligned template, fill inputs neatly
+How it works: Define a fixed HTML template with named slots ({{greeting}}, {{body}}, {{closing}}). The tool receives structured inputs (greeting, body paragraphs, closing) instead of one big context string. Fills the template deterministically.
+Problem: Requires the LLM to decompose the user’s request into structured fields before calling the tool — adds prompt complexity. Also doesn’t solve the core problem of where the body text comes from.
+Verdict: ⚠️ Better structure but same root problem remains.
+
+Option 4 — Generate mail completely in chat first, then push content as-is to draft ✅
+How it works:
+
+Step 1: LibreChat LLM composes the full email in chat
+        (no tool call yet — pure text generation)
+Step 2: User sees and approves the email in chat
+Step 3: Tool call pushes the exact composed text to Outlook Drafts
+
+
+Why this is the right approach:
+	•	LibreChat’s LLM composes freely without tool constraints
+	•	What the user sees in chat is exactly what goes into Outlook
+	•	No placeholder bodies, no bleeding context, no splitters needed
+	•	Clean separation: LLM = composition, MCP tool = storage only
+	•	Minimal code change — just restructure the tool signature
+Verdict: ✅ Best option. Clean, reliable, matches how tools should work.
+
+Recommendation: Option 4
+Here’s the implementation plan — minimal changes:
+How it works in practice
+
+User: "Draft an email to admin@co.com about project progress"
+         │
+         ▼
+LibreChat LLM composes the email in chat:
+─────────────────────────────────────────
+Dear Admin,
+
+Phase 2 has been kicked off. The team is currently resolving
+some technical issues and we expect completion by end of week.
+
+Best regards,
+─────────────────────────────────────────
+"Shall I save this to your Outlook Drafts?"
+         │
+User: "Yes save it"
+         │
+         ▼
+Tool: save_to_drafts(to, subject, body)
+→ Pushes the exact composed text to Outlook
+→ Returns confirmation only
+
+
+Code change — split into two tools
+Tool 1 — compose_email (no Graph API call, pure instruction)
+This tells LibreChat to compose and display the email, then offer to save it.
+
+@mcp.tool
+async def compose_email(
+    to_emails: str,
+    subject: str,
+    context: str,
+    cc_emails: str = "",
+) -> dict:
+    """
+    Compose a professional email and display it in chat for review.
+    Does NOT save to Outlook yet — use save_draft_to_outlook after
+    the user approves the composed email.
+
+    Use this tool when the user asks things like:
+    - "Draft an email to john@company.com about the project delay"
+    - "Write a professional email to the team about tomorrow's meeting"
+    - "Compose an email to the client about the invoice"
+
+    Args:
+        to_emails (str): Comma-separated recipient email addresses.
+        subject (str): The email subject line.
+        context (str): What the email should cover.
+        cc_emails (str): Optional CC addresses.
+
+    Returns:
+        dict with composition instruction for LibreChat's LLM.
+    """
+    logger.info(f"Tool called: compose_email (to={to_emails}, subject={subject})")
+
+    try:
+        to_list = [e.strip() for e in to_emails.split(",") if e.strip()]
+        cc_list = [e.strip() for e in cc_emails.split(",") if e.strip()] if cc_emails else []
+
+        if not to_list:
+            return {"error": True, "message": "No valid recipient email addresses provided."}
+
+        # Derive greeting name
+        local_part = to_list[0].split("@")[0]
+        greeting_name = local_part.replace("_", " ").replace(".", " ").title()
+
+        return {
+            "to": to_list,
+            "cc": cc_list,
+            "subject": subject,
+            "greeting_name": greeting_name,
+            "context": context,
+            "instruction": (
+                f"Compose and display a complete professional email using "
+                f"these exact rules:\n"
+                f"1. Display this header first:\n"
+                f"   **To:** {', '.join(to_list)}\n"
+                f"   {'**CC:** ' + ', '.join(cc_list) + chr(10) if cc_list else ''}"
+                f"   **Subject:** {subject}\n\n"
+                f"2. Then compose the email body:\n"
+                f"   - First line: Dear {greeting_name},\n"
+                f"   - 2-3 concise professional sentences based on: '{context}'\n"
+                f"   - Correct grammar, polite tone, no added facts\n"
+                f"   - Last line: Best regards,\n\n"
+                f"3. After the email ask: "
+                f"'Would you like me to save this to your Outlook Drafts?'\n"
+                f"   If yes, call save_draft_to_outlook with the exact "
+                f"   composed body text."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="compose_email", logger=logger)
+
+
+Tool 2 — save_draft_to_outlook (pure storage, no composition)
+
+@mcp.tool
+async def save_draft_to_outlook(
+    to_emails: str,
+    subject: str,
+    body_text: str,
+    cc_emails: str = "",
+) -> dict:
+    """
+    Save an already-composed email body to Outlook Drafts folder.
+    Call this AFTER compose_email and user approval — pass the exact
+    composed email body text from the chat.
+
+    Use this tool when the user says things like:
+    - "Yes save it to drafts"
+    - "Save that email"
+    - "Push it to Outlook"
+
+    Args:
+        to_emails (str): Comma-separated recipient email addresses.
+        subject (str): The email subject line.
+        body_text (str): The exact composed email body text to save.
+                          This should be the complete email including
+                          greeting and sign-off — copied exactly from
+                          what was displayed in chat.
+        cc_emails (str): Optional CC addresses.
+
+    Returns:
+        dict with draft ID and save confirmation.
+    """
+    logger.info(f"Tool called: save_draft_to_outlook (to={to_emails})")
+
+    try:
+        to_list = [e.strip() for e in to_emails.split(",") if e.strip()]
+        cc_list = [e.strip() for e in cc_emails.split(",") if e.strip()] if cc_emails else []
+
+        if not to_list:
+            return {"error": True, "message": "No valid recipient addresses provided."}
+
+        # Convert plain text to clean minimal HTML
+        # Split on newlines, wrap each non-empty line in <p> tags
+        paragraphs = [p.strip() for p in body_text.split("\n") if p.strip()]
+        body_html = (
+            '<html><body style="font-family: Calibri, Arial, sans-serif; '
+            'font-size: 14px; color: #333;">'
+            + "".join(f"<p>{p}</p>" for p in paragraphs)
+            + "</body></html>"
+        )
+
+        result = await create_draft(
+            to_emails=to_list,
+            subject=subject,
+            body_html=body_html,
+            cc_emails=cc_list if cc_list else None,
+        )
+
+        return {
+            "draft_id": result["draft_id"],
+            "subject": subject,
+            "to": to_list,
+            "status": "✅ Draft saved to Outlook Drafts folder.",
+            "instruction": (
+                f"Display this confirmation to the user:\n\n"
+                f"**✅ Draft Saved to Outlook**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **To** | {', '.join(to_list)} |\n"
+                + (f"| **CC** | {', '.join(cc_list)} |\n" if cc_list else "")
+                + f"| **Subject** | {subject} |\n"
+                f"| **Status** | Saved to Drafts folder |\n\n"
+                f"*Open Outlook to review and send.*"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="save_draft_to_outlook", logger=logger)
+
+
+What changes in server.py
+The old create_draft_email can stay for backward compatibility or be removed. Just add the two new tools to the import block — they register automatically via @mcp.tool.
+No other files change.
+
+User experience after this fix
+
+You: Draft an email to admin@co.com about project progress...
+
+Agent: 
+To: admin@co.com
+Subject: Project Progress Update
+
+Dear Admin,
+
+I am writing to inform you that Phase 2 of the project has been 
+successfully kicked off. The team is currently addressing some 
+technical challenges and is actively working towards resolution. 
+We anticipate full completion by end of this week.
+
+Best regards,
+
+Would you like me to save this to your Outlook Drafts?
+
+You: Yes
+
+Agent: ✅ Draft Saved to Outlook
+| To      | admin@co.com          |
+| Subject | Project Progress Update |
+| Status  | Saved to Drafts folder  |
+
+Open Outlook to review and send.
+
+
+Clean, no bleeding content, exactly what goes into Outlook. Shall I proceed?​​​​​​​​​​​​​​​​
+
+
+
+
