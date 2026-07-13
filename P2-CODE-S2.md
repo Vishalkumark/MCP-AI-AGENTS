@@ -2046,5 +2046,80 @@ Open Outlook to review and send.
 Clean, no bleeding content, exactly what goes into Outlook. Shall I proceed?​​​​​​​​​​​​​​​​
 
 
+---
+
+@mcp.tool
+async def compose_reply(
+    email_id: str,
+    reply_context: str,
+) -> dict:
+    """
+    Read an email and compose a professional reply — displayed in
+    chat for review before saving. Does NOT save to Outlook yet.
+    Use save_draft_to_outlook after the user approves the reply.
+
+    Use this tool when the user asks things like:
+    - "Draft a reply to John's email saying we'll deliver by Friday"
+    - "Reply to this email professionally"
+    - "Write a response to the client's email"
+
+    Args:
+        email_id (str): Graph API ID of the email to reply to.
+                         Obtained from list_emails or search_emails.
+        reply_context (str): What the reply should say.
+
+    Returns:
+        dict with original email context and composition instruction
+        for LibreChat's LLM to compose and display the reply.
+    """
+    logger.info(f"Tool called: compose_reply (email_id={email_id})")
+
+    try:
+        # Step 1: Read the original email for context
+        original = await fetch_message_by_id(email_id)
+        original_subject = original.get("subject", "")
+        original_sender = (
+            original.get("from", {})
+            .get("emailAddress", {})
+            .get("name", "")
+        )
+        original_sender_email = (
+            original.get("from", {})
+            .get("emailAddress", {})
+            .get("address", "")
+        )
+        original_preview = original.get("body", {}).get("content", "")[:300]
+
+        return {
+            "original_subject": original_subject,
+            "original_sender": original_sender,
+            "original_sender_email": original_sender_email,
+            "reply_context": reply_context,
+            "instruction": (
+                f"Compose and display a complete professional reply "
+                f"using these exact rules:\n\n"
+                f"1. Display this header first:\n"
+                f"   **Replying to:** {original_sender} <{original_sender_email}>\n"
+                f"   **Subject:** Re: {original_subject}\n\n"
+                f"2. Then compose the reply body:\n"
+                f"   - First line: Dear {original_sender},\n"
+                f"   - 2-3 concise professional sentences based on: '{reply_context}'\n"
+                f"   - Reference the original email context where helpful\n"
+                f"   - Correct grammar, polite tone, no added facts\n"
+                f"   - Last line: Best regards,\n\n"
+                f"3. After the reply ask:\n"
+                f"   'Would you like me to save this reply to your Outlook Drafts?'\n"
+                f"   If yes, call save_draft_to_outlook with:\n"
+                f"   - to_emails: '{original_sender_email}'\n"
+                f"   - subject: 'Re: {original_subject}'\n"
+                f"   - body_text: the exact composed reply body\n\n"
+                f"Original email context (for reference):\n{original_preview}"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="compose_reply", logger=logger)
+
+
 
 
