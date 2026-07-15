@@ -1869,6 +1869,1715 @@ output
   "stderr" : ""
 
 
+---
+---
+---
+
+# Phase 3 — MOM Generation + Follow-up Tracking + Reminders
+
+**Project:** outlook-ai-agent-mcp
+**Scope:** MOM generation, follow-up tracking, reminder drafts, Microsoft Tasks
+**Format:** Formal MOM | Multi-language | To-Do + Planner
+**Status:** Review then implement
+
+-----
+
+## PART A — What Phase 3 Delivers
+
+### New MCP Tools (8 tools added)
+
+|Tool                 |Description                                               |
+|---------------------|----------------------------------------------------------|
+|`generate_mom`       |Generate formal MOM from email thread or single email     |
+|`save_mom_as_draft`  |Save generated MOM as an email draft to send to attendees |
+|`track_followups`    |Scan inbox and find emails that need a reply              |
+|`check_email_replied`|Check if a specific email has been replied to             |
+|`compose_followup`   |Compose a professional follow-up email for an overdue item|
+|`add_task_todo`      |Add a task to Microsoft To-Do                             |
+|`add_task_planner`   |Add a task to Microsoft Planner board                     |
+|`list_tasks`         |List tasks from To-Do or Planner                          |
+
+**Total tools after Phase 3: 33**
+
+-----
+
+## PART B — Prerequisites & Approvals
+
+### B.1 — New Graph API Permissions Required
+
+|Permission              |Type     |Purpose                              |Where to add                                      |
+|------------------------|---------|-------------------------------------|--------------------------------------------------|
+|`Tasks.ReadWrite`       |Delegated|Create and read Microsoft To-Do tasks|Azure Portal → App Registrations → API Permissions|
+|`Tasks.ReadWrite.Shared`|Delegated|Access shared task lists             |Same                                              |
+|`Group.Read.All`        |Delegated|Read Planner groups/plans            |Same — requires admin consent                     |
+|`Tasks.Read`            |Delegated|Read Planner tasks                   |Same                                              |
+
+**What to ask your admin:**
+
+> “Please add and grant consent for `Tasks.ReadWrite`,
+> `Tasks.ReadWrite.Shared`, `Group.Read.All`, and `Tasks.Read`
+> on our Azure App Registration for the Outlook AI Agent project.”
+
+### B.2 — New Python Libraries
+
+|Library     |Purpose                                         |Install                 |
+|------------|------------------------------------------------|------------------------|
+|`langdetect`|Detect email language for multi-language support|`pip install langdetect`|
+
+```bash
+pip install langdetect
+```
+
+Add to `requirements.txt`:
+
+```txt
+langdetect>=1.0.9
+```
+
+### B.3 — .env additions
+
+```env
+# =================================================================
+# PHASE 3 — FOLLOW-UP TRACKING
+# =================================================================
+FOLLOWUP_SCAN_COUNT=20
+FOLLOWUP_DAYS_THRESHOLD=3
+
+# =================================================================
+# PHASE 3 — MICROSOFT PLANNER
+# =================================================================
+PLANNER_GROUP_ID=
+PLANNER_PLAN_ID=
+```
+
+`PLANNER_GROUP_ID` and `PLANNER_PLAN_ID` — ask your team for these.
+To find them: Azure Portal → Groups → your team group → ID.
+Or run `list_tasks` with source=planner and it will guide you.
+
+### B.4 — `config/settings.py` additions
+
+Add inside `__init__`:
+
+```python
+        # ----- Phase 3 — Follow-up tracking -----
+        self.FOLLOWUP_SCAN_COUNT: int = int(
+            _optional_env("FOLLOWUP_SCAN_COUNT", "20")
+        )
+        self.FOLLOWUP_DAYS_THRESHOLD: int = int(
+            _optional_env("FOLLOWUP_DAYS_THRESHOLD", "3")
+        )
+
+        # ----- Phase 3 — Microsoft Planner -----
+        self.PLANNER_GROUP_ID: str = _optional_env("PLANNER_GROUP_ID", "")
+        self.PLANNER_PLAN_ID: str = _optional_env("PLANNER_PLAN_ID", "")
+```
+
+### B.5 — Updated folder structure
+
+```
+outlook-ai-agent-mcp/
+│
+├── tools/
+│   └── mom_tools.py           ← NEW — MOM generation + save as draft
+│   └── followup_tools.py      ← NEW — follow-up tracking + compose
+│   └── task_tools.py          ← UPDATED — add To-Do + Planner tools
+│
+├── graph/
+│   └── thread_client.py       ← NEW — fetch email thread/conversation
+│   └── task_client.py         ← NEW — Microsoft To-Do + Planner calls
+│
+├── utils/
+│   └── language_utils.py      ← NEW — language detection helper
+```
+
+-----
+
+## PART C — MOM Format (Formal)
+
+Every MOM generated will follow this exact structure:
+
+```
+═══════════════════════════════════════════════════
+         MINUTES OF MEETING (MOM)
+═══════════════════════════════════════════════════
+
+1. MEETING DETAILS
+   Date        : [extracted from email]
+   Subject     : [email subject]
+   Prepared by : [logged-in user]
+   Source      : [Email thread / Single email]
+
+2. ATTENDEES
+   | Name | Email | Role |
+   |------|-------|------|
+   | ...  | ...   | ...  |
+
+3. DISCUSSION SUMMARY
+   [3-5 paragraph structured summary of what was discussed]
+
+4. DECISIONS MADE
+   • [Decision 1]
+   • [Decision 2]
+
+5. ACTION ITEMS
+   | # | Action | Owner | Deadline | Status |
+   |---|--------|-------|----------|--------|
+   | 1 | ...    | ...   | ...      | Open   |
+
+6. NEXT STEPS
+   [What happens next, next meeting if mentioned]
+
+7. NOTES
+   [Any additional context or observations]
+
+═══════════════════════════════════════════════════
+```
+
+-----
+
+## PART D — Code
+
+-----
+
+### `utils/language_utils.py`
+
+```python
+"""
+language_utils.py
+=================
+Language detection utility for multi-language email support.
+
+Why this file exists:
+    Emails at an international company like Fichtner may arrive in
+    German, English, French, or other languages. MOM generation and
+    follow-up drafts should match the language of the original email
+    so recipients receive content in the correct language.
+
+Design notes:
+    - Uses langdetect library which identifies language from text.
+    - Falls back to English if detection fails or text is too short.
+    - Language codes follow ISO 639-1 (en, de, fr, es, etc.)
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Mapping of ISO language codes to full language names
+# used in LLM instructions
+LANGUAGE_NAMES = {
+    "en": "English",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "nl": "Dutch",
+    "pt": "Portuguese",
+    "pl": "Polish",
+    "cs": "Czech",
+    "ro": "Romanian",
+    "hu": "Hungarian",
+    "tr": "Turkish",
+    "ar": "Arabic",
+    "zh-cn": "Chinese (Simplified)",
+    "ja": "Japanese",
+}
 
 
+def detect_language(text: str) -> tuple[str, str]:
+    """
+    Detect the language of a text string.
+
+    Args:
+        text (str): Text to detect language from.
+
+    Returns:
+        tuple[str, str]: A pair of (language_code, language_name).
+                          e.g. ("de", "German") or ("en", "English").
+                          Falls back to ("en", "English") if detection fails.
+    """
+    if not text or len(text.strip()) < 20:
+        logger.debug("Text too short for language detection — defaulting to English")
+        return "en", "English"
+
+    try:
+        from langdetect import detect
+        code = detect(text)
+        name = LANGUAGE_NAMES.get(code, code.upper())
+        logger.info(f"Language detected: {name} ({code})")
+        return code, name
+
+    except Exception as exc:
+        logger.warning(f"Language detection failed: {exc} — defaulting to English")
+        return "en", "English"
+
+
+def get_language_instruction(lang_code: str, lang_name: str) -> str:
+    """
+    Build a language instruction string for LLM prompts.
+
+    Args:
+        lang_code (str): ISO 639-1 language code.
+        lang_name (str): Full language name.
+
+    Returns:
+        str: Instruction to append to any LLM prompt requiring
+              language-matched output.
+    """
+    if lang_code == "en":
+        return "Write in English."
+    return (
+        f"Write entirely in {lang_name}. "
+        f"All headings, labels, and content must be in {lang_name}. "
+        f"Do not mix languages."
+    )
+```
+
+-----
+
+### `graph/thread_client.py`
+
+```python
+"""
+thread_client.py
+================
+Microsoft Graph API calls for fetching email threads (conversations)
+and building conversation chains for MOM generation.
+
+Why this file exists:
+    A single email is often just one message in a longer thread.
+    For accurate MOM generation, we need all messages in a
+    conversation — not just the latest one. This file fetches
+    the complete conversation chain using Graph API's
+    conversationId linking.
+
+Design notes:
+    - Messages in a thread share a conversationId field.
+    - We fetch the thread by filtering messages by conversationId.
+    - Messages are sorted chronologically (oldest first) so the
+      MOM reflects the natural flow of discussion.
+    - Thread fetching requires Mail.Read permission only.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from graph.graph_client_factory import get_graph_client
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Function: fetch_email_thread
+# ---------------------------------------------------------------------------
+async def fetch_email_thread(message_id: str) -> list[dict]:
+    """
+    Fetch all messages in the same conversation thread as a given email.
+
+    Args:
+        message_id (str): Graph API ID of any message in the thread.
+
+    Returns:
+        list[dict]: All messages in the thread, sorted oldest first,
+                     each as a plain dictionary.
+    """
+    logger.info(f"Fetching thread for message: {message_id}")
+    client = get_graph_client()
+
+    # Step 1: Get the target message to extract its conversationId
+    target_msg = await client.me.messages.by_message_id(message_id).get()
+    conversation_id = target_msg.conversation_id
+
+    if not conversation_id:
+        logger.warning(f"No conversationId found for message {message_id}")
+        # Return just the single message if no thread found
+        return [_msg_to_dict(target_msg)]
+
+    logger.info(f"ConversationId: {conversation_id}")
+
+    # Step 2: Fetch all messages with the same conversationId
+    from msgraph.generated.users.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+
+    query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+        filter=f"conversationId eq '{conversation_id}'",
+        orderby=["receivedDateTime ASC"],  # oldest first for chronological MOM
+        top=50,
+    )
+    request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+        query_parameters=query_params,
+    )
+    request_config.headers.add("ConsistencyLevel", "eventual")
+
+    response = await client.me.messages.get(request_configuration=request_config)
+    messages = response.value if response and response.value else [target_msg]
+
+    return [_msg_to_dict(m) for m in messages]
+
+
+# ---------------------------------------------------------------------------
+# Helper: _msg_to_dict
+# ---------------------------------------------------------------------------
+def _msg_to_dict(message) -> dict:
+    """Convert a Graph SDK Message to a plain dict for MOM processing."""
+    return {
+        "id": message.id,
+        "subject": message.subject or "",
+        "sender_name": (
+            message.from_.email_address.name
+            if message.from_ and message.from_.email_address else ""
+        ),
+        "sender_email": (
+            message.from_.email_address.address
+            if message.from_ and message.from_.email_address else ""
+        ),
+        "to_recipients": [
+            {
+                "name": r.email_address.name or "",
+                "email": r.email_address.address or "",
+            }
+            for r in (message.to_recipients or [])
+            if r.email_address
+        ],
+        "cc_recipients": [
+            {
+                "name": r.email_address.name or "",
+                "email": r.email_address.address or "",
+            }
+            for r in (message.cc_recipients or [])
+            if r.email_address
+        ],
+        "received_date": (
+            message.received_date_time.isoformat()
+            if message.received_date_time else ""
+        ),
+        "body": message.body.content if message.body else "",
+        "has_attachments": message.has_attachments or False,
+        "is_draft": message.is_draft or False,
+    }
+```
+
+-----
+
+### `graph/task_client.py`
+
+```python
+"""
+task_client.py
+==============
+Microsoft Graph API calls for Microsoft To-Do and Microsoft Planner.
+
+Why this file exists:
+    Phase 3 adds the ability to create reminders as real Microsoft
+    tasks — either personal (To-Do) or team-level (Planner). This
+    keeps follow-up items visible in the Microsoft 365 ecosystem
+    the team already uses, rather than storing them only in our
+    platform.
+
+Design notes:
+    - To-Do uses /me/todo/lists/{listId}/tasks endpoint.
+    - Planner uses /planner/tasks endpoint with a planId.
+    - Both require Tasks.ReadWrite permission.
+    - Planner additionally requires Group.Read.All for plan discovery.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from datetime import datetime, timezone
+
+from graph.graph_client_factory import get_graph_client
+from config.settings import settings
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Function: get_todo_lists
+# ---------------------------------------------------------------------------
+async def get_todo_lists() -> list[dict]:
+    """
+    Fetch all Microsoft To-Do task lists for the current user.
+
+    Returns:
+        list[dict]: List of task lists with id and displayName.
+    """
+    logger.info("Fetching Microsoft To-Do lists")
+    client = get_graph_client()
+
+    response = await client.me.todo.lists.get()
+    lists = response.value if response and response.value else []
+
+    return [
+        {"id": lst.id, "name": lst.display_name}
+        for lst in lists
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Function: create_todo_task
+# ---------------------------------------------------------------------------
+async def create_todo_task(
+    title: str,
+    due_date: str = "",
+    notes: str = "",
+    list_name: str = "Tasks",
+) -> dict:
+    """
+    Create a task in Microsoft To-Do.
+
+    Args:
+        title (str): Task title / description.
+        due_date (str): Optional due date in ISO format or natural
+                         language e.g. "2026-07-20", "end of week".
+        notes (str): Optional additional notes or context.
+        list_name (str): Name of the To-Do list to add to.
+                          Default "Tasks" (the default list).
+
+    Returns:
+        dict: Created task ID, title, and confirmation.
+    """
+    logger.info(f"Creating To-Do task: '{title}' in list '{list_name}'")
+    client = get_graph_client()
+
+    from msgraph.generated.models.todo_task import TodoTask
+    from msgraph.generated.models.item_body import ItemBody
+    from msgraph.generated.models.body_type import BodyType
+    from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
+
+    # Step 1: Find or use default task list
+    todo_lists = await get_todo_lists()
+    target_list = next(
+        (lst for lst in todo_lists
+         if lst["name"].lower() == list_name.lower()),
+        None
+    )
+
+    if not target_list and todo_lists:
+        # Fall back to first available list
+        target_list = todo_lists[0]
+        logger.info(
+            f"List '{list_name}' not found — using '{target_list['name']}'"
+        )
+
+    if not target_list:
+        return {
+            "error": True,
+            "message": "No To-Do lists found. Please check Microsoft To-Do access.",
+        }
+
+    # Step 2: Build the task object
+    task = TodoTask()
+    task.title = title
+
+    if notes:
+        task.body = ItemBody()
+        task.body.content = notes
+        task.body.content_type = BodyType.Text
+
+    if due_date:
+        from utils.date_utils import parse_date_string
+        due_dt = parse_date_string(due_date)
+        if due_dt:
+            task.due_date_time = DateTimeTimeZone()
+            task.due_date_time.date_time = due_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            task.due_date_time.time_zone = "UTC"
+
+    # Step 3: Create the task
+    created = await (
+        client.me.todo.lists
+        .by_todo_task_list_id(target_list["id"])
+        .tasks.post(task)
+    )
+
+    return {
+        "task_id": created.id,
+        "title": created.title,
+        "list_name": target_list["name"],
+        "due_date": due_date or "Not set",
+        "status": f"Task created in Microsoft To-Do — {target_list['name']}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Function: create_planner_task
+# ---------------------------------------------------------------------------
+async def create_planner_task(
+    title: str,
+    due_date: str = "",
+    notes: str = "",
+    assigned_to_email: str = "",
+) -> dict:
+    """
+    Create a task in Microsoft Planner.
+
+    Args:
+        title (str): Task title.
+        due_date (str): Optional due date.
+        notes (str): Optional task description/notes.
+        assigned_to_email (str): Optional email of the person to
+                                   assign the task to.
+
+    Returns:
+        dict: Created task details and confirmation.
+    """
+    logger.info(f"Creating Planner task: '{title}'")
+    client = get_graph_client()
+
+    plan_id = settings.PLANNER_PLAN_ID
+
+    if not plan_id:
+        return {
+            "error": True,
+            "message": (
+                "PLANNER_PLAN_ID is not configured in .env. "
+                "Please ask your team for the Planner Plan ID and "
+                "add it to .env as PLANNER_PLAN_ID=<your-plan-id>."
+            ),
+        }
+
+    from msgraph.generated.models.planner_task import PlannerTask
+    from msgraph.generated.models.planner_assigned_to_task_board_format import (
+        PlannerAssignedToTaskBoardFormat,
+    )
+    from msgraph.generated.models.planner_assignments import PlannerAssignments
+
+    # Step 1: Build Planner task
+    task = PlannerTask()
+    task.plan_id = plan_id
+    task.title = title
+
+    if due_date:
+        from utils.date_utils import parse_date_string
+        due_dt = parse_date_string(due_date)
+        if due_dt:
+            task.due_date_time = due_dt.replace(tzinfo=timezone.utc)
+
+    # Step 2: Resolve assignee if provided
+    if assigned_to_email:
+        try:
+            # Look up user's Graph ID from their email
+            from msgraph.generated.users.users_request_builder import (
+                UsersRequestBuilder,
+            )
+            user_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
+                filter=f"mail eq '{assigned_to_email}'",
+                select=["id", "displayName"],
+            )
+            user_config = UsersRequestBuilder.UsersRequestBuilderGetRequestConfiguration(
+                query_parameters=user_params,
+            )
+            user_config.headers.add("ConsistencyLevel", "eventual")
+            user_response = await client.users.get(
+                request_configuration=user_config
+            )
+            users = user_response.value if user_response else []
+            if users:
+                from msgraph.generated.models.planner_assignment import (
+                    PlannerAssignment,
+                )
+                assignments = PlannerAssignments()
+                assignment = PlannerAssignment()
+                assignment.order_hint = " !"
+                assignments.additional_data = {users[0].id: assignment}
+                task.assignments = assignments
+        except Exception as assign_err:
+            logger.warning(f"Could not resolve assignee: {assign_err}")
+
+    # Step 3: Create the task
+    created = await client.planner.tasks.post(task)
+
+    # Step 4: Add notes as task details if provided
+    if notes and created.id:
+        try:
+            from msgraph.generated.models.planner_task_details import (
+                PlannerTaskDetails,
+            )
+            details = PlannerTaskDetails()
+            details.description = notes
+            await client.planner.tasks.by_planner_task_id(
+                created.id
+            ).details.patch(details)
+        except Exception as notes_err:
+            logger.warning(f"Could not add task notes: {notes_err}")
+
+    return {
+        "task_id": created.id,
+        "title": created.title,
+        "plan_id": plan_id,
+        "due_date": due_date or "Not set",
+        "assigned_to": assigned_to_email or "Unassigned",
+        "status": "Task created in Microsoft Planner",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Function: get_todo_tasks
+# ---------------------------------------------------------------------------
+async def get_todo_tasks(list_name: str = "Tasks", top: int = 20) -> list[dict]:
+    """
+    Fetch tasks from a Microsoft To-Do list.
+
+    Args:
+        list_name (str): Name of the To-Do list. Default "Tasks".
+        top (int): Maximum number of tasks to return.
+
+    Returns:
+        list[dict]: List of task dictionaries.
+    """
+    logger.info(f"Fetching To-Do tasks from list: '{list_name}'")
+    client = get_graph_client()
+
+    todo_lists = await get_todo_lists()
+    target_list = next(
+        (lst for lst in todo_lists
+         if lst["name"].lower() == list_name.lower()),
+        todo_lists[0] if todo_lists else None
+    )
+
+    if not target_list:
+        return []
+
+    from msgraph.generated.users.item.todo.lists.item.tasks.tasks_request_builder import (
+        TasksRequestBuilder,
+    )
+
+    query_params = TasksRequestBuilder.TasksRequestBuilderGetQueryParameters(
+        top=top,
+        filter="status ne 'completed'",
+    )
+    request_config = TasksRequestBuilder.TasksRequestBuilderGetRequestConfiguration(
+        query_parameters=query_params,
+    )
+
+    response = await (
+        client.me.todo.lists
+        .by_todo_task_list_id(target_list["id"])
+        .tasks.get(request_configuration=request_config)
+    )
+
+    tasks = response.value if response and response.value else []
+
+    return [
+        {
+            "id": t.id,
+            "title": t.title or "",
+            "due_date": (
+                t.due_date_time.date_time[:10]
+                if t.due_date_time else "Not set"
+            ),
+            "status": t.status.value if t.status else "notStarted",
+            "list_name": target_list["name"],
+        }
+        for t in tasks
+    ]
+```
+
+-----
+
+### `tools/mom_tools.py`
+
+```python
+"""
+mom_tools.py
+============
+MCP tools for generating formal Minutes of Meeting (MOM) from
+email threads or single emails, and saving them as draft emails.
+
+Why this file exists:
+    Manually preparing MOM from email discussions is one of the most
+    time-consuming tasks for employees. This tool reads the email
+    thread, extracts all participants, discussion points, decisions,
+    and action items, and produces a formal MOM document — instantly.
+
+Design notes:
+    - MOM generation delegates to LibreChat's LLM via the instruction
+      field — no Requesty or external LLM calls.
+    - Multi-language: detects the email language and instructs
+      LibreChat's LLM to generate the MOM in the same language.
+    - Formal format: fixed sections — Details, Attendees, Discussion,
+      Decisions, Action Items, Next Steps, Notes.
+    - save_mom_as_draft uses save_draft_to_outlook pattern — no direct
+      Graph API save here, keeps the compose/save separation clean.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from tools.mcp_instance import mcp
+
+from graph.mail_client import fetch_message_by_id
+from graph.thread_client import fetch_email_thread
+from graph.draft_client import create_draft
+
+from utils.error_handler import format_tool_error
+from utils.logger import get_logger
+from utils.language_utils import detect_language, get_language_instruction
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tool: generate_mom
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def generate_mom(
+    email_id: str,
+    use_thread: bool = True,
+) -> dict:
+    """
+    Generate a formal Minutes of Meeting (MOM) document from an email
+    or email thread. Detects language automatically and produces the
+    MOM in the same language as the source emails.
+
+    Use this tool when the user asks things like:
+    - "Generate MOM from this email thread"
+    - "Create minutes of meeting from John's email chain"
+    - "Prepare a formal MOM from this discussion"
+    - "Extract meeting minutes from this email"
+
+    Args:
+        email_id (str): Graph API ID of any email in the thread.
+                         If use_thread=True, fetches the full chain.
+                         If use_thread=False, uses only this email.
+        use_thread (bool): True to fetch the full conversation thread
+                            (recommended for accurate MOM). False to
+                            use only the single email pointed to.
+                            Default True.
+
+    Returns:
+        dict with structured email data and MOM generation instruction
+        for LibreChat's LLM to produce the formal document.
+    """
+    logger.info(
+        f"Tool called: generate_mom "
+        f"(email_id={email_id[:20]}..., use_thread={use_thread})"
+    )
+
+    try:
+        # Step 1: Fetch email(s)
+        if use_thread:
+            messages = await fetch_email_thread(email_id)
+            source_label = "Email Thread"
+        else:
+            single = await fetch_message_by_id(email_id)
+            messages = [single]
+            source_label = "Single Email"
+
+        if not messages:
+            return {
+                "error": True,
+                "message": "No email content found to generate MOM from.",
+            }
+
+        # Step 2: Collect all participants across the thread
+        participants = {}
+        for msg in messages:
+            # Handle both raw Graph dict and thread_client dict formats
+            sender_name = (
+                msg.get("sender_name")
+                or msg.get("from", {}).get("emailAddress", {}).get("name", "")
+            )
+            sender_email = (
+                msg.get("sender_email")
+                or msg.get("from", {}).get("emailAddress", {}).get("address", "")
+            )
+            if sender_email and sender_email not in participants:
+                participants[sender_email] = sender_name or sender_email
+
+            for r in msg.get("to_recipients", []):
+                email = r.get("email", "")
+                name = r.get("name", email)
+                if email and email not in participants:
+                    participants[email] = name
+
+            for r in msg.get("cc_recipients", []):
+                email = r.get("email", "")
+                name = r.get("name", email)
+                if email and email not in participants:
+                    participants[email] = name
+
+        # Step 3: Build attendee table
+        attendee_rows = "\n".join([
+            f"| {name} | {email} | Participant |"
+            for email, name in participants.items()
+        ])
+
+        # Step 4: Build chronological email digest for LLM
+        email_digest = ""
+        for i, msg in enumerate(messages, 1):
+            sender = (
+                msg.get("sender_name")
+                or msg.get("from", {}).get("emailAddress", {}).get("name", "Unknown")
+            )
+            date = (
+                msg.get("received_date")
+                or msg.get("receivedDateTime", "")
+            )[:10]
+            subject = msg.get("subject", "")
+            body = (
+                msg.get("body", {}).get("content", "")
+                if isinstance(msg.get("body"), dict)
+                else msg.get("body", "")
+            )[:800]
+
+            email_digest += (
+                f"--- Message {i} ---\n"
+                f"From: {sender}\n"
+                f"Date: {date}\n"
+                f"Subject: {subject}\n"
+                f"Content: {body}\n\n"
+            )
+
+        # Step 5: Detect language from combined content
+        sample_text = " ".join([
+            msg.get("subject", "") + " " +
+            (
+                msg.get("body", {}).get("content", "")
+                if isinstance(msg.get("body"), dict)
+                else msg.get("body", "")
+            )[:200]
+            for msg in messages[:3]
+        ])
+        lang_code, lang_name = detect_language(sample_text)
+        lang_instruction = get_language_instruction(lang_code, lang_name)
+
+        # Step 6: Get meeting subject and date from first/last message
+        first_msg = messages[0]
+        last_msg = messages[-1]
+        meeting_subject = first_msg.get("subject", "Meeting")
+        meeting_date = (
+            last_msg.get("received_date")
+            or last_msg.get("receivedDateTime", "")
+        )[:10]
+
+        # Step 7: Build the formal MOM instruction for LibreChat's LLM
+        mom_instruction = f"""
+Generate a formal Minutes of Meeting (MOM) document.
+{lang_instruction}
+
+Use EXACTLY this structure and format:
+
+═══════════════════════════════════════════════════
+         MINUTES OF MEETING (MOM)
+═══════════════════════════════════════════════════
+
+1. MEETING DETAILS
+   Date        : {meeting_date}
+   Subject     : {meeting_subject}
+   Source      : {source_label} ({len(messages)} message(s))
+   Language    : {lang_name}
+
+2. ATTENDEES
+   | Name | Email | Role |
+   |------|-------|------|
+{attendee_rows}
+
+3. DISCUSSION SUMMARY
+   [Write 3-5 paragraphs summarising the key discussion points
+   from the email content below. Be factual and concise.]
+
+4. DECISIONS MADE
+   [List decisions as bullet points. If none found, write "No explicit decisions recorded."]
+
+5. ACTION ITEMS
+   | # | Action | Owner | Deadline | Status |
+   |---|--------|-------|----------|--------|
+   [Extract all action items, tasks, and next steps. Status = Open]
+
+6. NEXT STEPS
+   [Summarise what happens next based on the discussion]
+
+7. NOTES
+   [Any additional observations, caveats, or context]
+
+═══════════════════════════════════════════════════
+
+Email content to base the MOM on:
+
+{email_digest}
+
+Rules:
+- Be factual — only include what is in the emails
+- Do not invent names, dates, or decisions
+- {lang_instruction}
+- Keep Action Items table populated even if only 1 item found
+- Format output as clean markdown
+"""
+
+        return {
+            "email_count": len(messages),
+            "participants": participants,
+            "meeting_subject": meeting_subject,
+            "meeting_date": meeting_date,
+            "language_detected": lang_name,
+            "source": source_label,
+            "instruction": mom_instruction,
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="generate_mom", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Tool: save_mom_as_draft
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def save_mom_as_draft(
+    to_emails: str,
+    subject: str,
+    mom_content: str,
+) -> dict:
+    """
+    Save a generated MOM as an email draft to send to all attendees.
+    Call this AFTER generate_mom and user approval of the MOM content.
+
+    Use this tool when the user says things like:
+    - "Save this MOM and send it to everyone"
+    - "Draft this MOM to all attendees"
+    - "Email this MOM to the team"
+
+    Args:
+        to_emails (str): Comma-separated email addresses of all
+                          attendees to receive the MOM.
+        subject (str): Email subject e.g. "MOM — Project Kickoff".
+        mom_content (str): The full MOM text exactly as generated
+                            and approved in chat.
+
+    Returns:
+        dict with draft ID and save confirmation.
+    """
+    logger.info(f"Tool called: save_mom_as_draft (to={to_emails})")
+
+    try:
+        to_list = [e.strip() for e in to_emails.split(",") if e.strip()]
+
+        if not to_list:
+            return {
+                "error": True,
+                "message": "No recipient email addresses provided.",
+            }
+
+        # Convert MOM markdown to clean HTML
+        # Wrap in a pre-formatted block to preserve structure
+        paragraphs = [p.strip() for p in mom_content.split("\n") if p.strip()]
+        body_html = (
+            '<html><body style="font-family: Calibri, Arial, sans-serif; '
+            'font-size: 13px; color: #333;">'
+            '<div style="white-space: pre-wrap; font-family: monospace;">'
+            + "\n".join(paragraphs)
+            + "</div></body></html>"
+        )
+
+        result = await create_draft(
+            to_emails=to_list,
+            subject=subject,
+            body_html=body_html,
+        )
+
+        return {
+            "draft_id": result["draft_id"],
+            "subject": subject,
+            "to": to_list,
+            "status": "✅ MOM saved as email draft in Outlook Drafts",
+            "instruction": (
+                f"Display this confirmation:\n\n"
+                f"**✅ MOM Draft Saved**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **To** | {', '.join(to_list)} |\n"
+                f"| **Subject** | {subject} |\n"
+                f"| **Status** | Saved to Outlook Drafts |\n\n"
+                f"*Open Outlook to review and send the MOM to attendees.*"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="save_mom_as_draft", logger=logger)
+```
+
+-----
+
+### `tools/followup_tools.py`
+
+```python
+"""
+followup_tools.py
+=================
+MCP tools for tracking emails that need follow-up, composing
+professional follow-up messages, and creating reminder tasks
+in Microsoft To-Do or Planner.
+
+Why this file exists:
+    Employees often miss reply deadlines because there is no automated
+    way to know which emails are still waiting for a response.
+    This file provides tools to surface those emails and take action —
+    either by composing a follow-up or creating a tracked reminder task.
+
+Design notes:
+    - Follow-up detection uses two signals:
+        1. Email is older than FOLLOWUP_DAYS_THRESHOLD days
+        2. No reply was sent by the logged-in user in the same thread
+    - Multi-language: follow-up drafts match the original email language.
+    - Task creation delegates to graph/task_client.py.
+    - Compose pattern: display in chat first, save on approval.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from datetime import datetime, timedelta, timezone
+
+from tools.mcp_instance import mcp
+
+from graph.mail_client import fetch_recent_messages, fetch_message_by_id
+from graph.thread_client import fetch_email_thread
+from graph.task_client import create_todo_task, create_planner_task, get_todo_tasks
+
+from utils.error_handler import format_tool_error
+from utils.logger import get_logger
+from utils.language_utils import detect_language, get_language_instruction
+from config.settings import settings
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helper: _needs_followup
+# ---------------------------------------------------------------------------
+def _needs_followup(msg: dict, user_email: str, threshold_days: int) -> bool:
+    """
+    Determine if an email needs a follow-up based on age and
+    whether the current user has already replied.
+
+    Args:
+        msg (dict): Email dictionary from mail_client.
+        user_email (str): The logged-in user's email address.
+        threshold_days (int): Days after which an unreplied email
+                               is considered overdue.
+
+    Returns:
+        bool: True if follow-up is needed.
+    """
+    # Skip drafts and emails sent by the user themselves
+    if msg.get("is_draft"):
+        return False
+
+    sender_email = (
+        msg.get("from", {}).get("emailAddress", {}).get("address", "").lower()
+    )
+    if sender_email == user_email.lower():
+        return False
+
+    # Check age
+    received_raw = msg.get("receivedDateTime", "")
+    if not received_raw:
+        return False
+
+    try:
+        received_dt = datetime.fromisoformat(
+            received_raw.replace("Z", "+00:00")
+        )
+        age_days = (datetime.now(timezone.utc) - received_dt).days
+        return age_days >= threshold_days
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Tool: track_followups
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def track_followups(
+    days_threshold: int = None,
+    count: int = None,
+) -> dict:
+    """
+    Scan the inbox and identify emails that have not been replied to
+    and are older than the configured threshold days.
+
+    Use this tool when the user asks things like:
+    - "Which emails need a follow-up?"
+    - "What emails have I not replied to?"
+    - "Show me overdue emails"
+    - "Find emails waiting for my response"
+
+    Args:
+        days_threshold (int): Emails older than this many days without
+                               a reply are flagged. Default from .env
+                               (FOLLOWUP_DAYS_THRESHOLD = 3 days).
+        count (int): Number of inbox emails to scan. Default from
+                      .env (FOLLOWUP_SCAN_COUNT = 20).
+
+    Returns:
+        dict with list of emails needing follow-up and a display table.
+    """
+    logger.info("Tool called: track_followups")
+
+    try:
+        threshold = days_threshold or settings.FOLLOWUP_DAYS_THRESHOLD
+        scan_count = count or settings.FOLLOWUP_SCAN_COUNT
+
+        # Step 1: Get current user profile to know their email
+        from graph.graph_client_factory import get_user_profile
+        profile = await get_user_profile()
+        user_email = profile.get("mail") or profile.get("userPrincipalName") or ""
+
+        # Step 2: Fetch recent inbox emails
+        raw_messages = await fetch_recent_messages(top=scan_count)
+
+        if not raw_messages:
+            return {
+                "followup_count": 0,
+                "display_table": "📭 Inbox is empty — no emails to track.",
+                "instruction": "Inform the user their inbox is empty.",
+            }
+
+        # Step 3: Filter emails needing follow-up
+        needs_reply = [
+            m for m in raw_messages
+            if _needs_followup(m, user_email, threshold)
+        ]
+
+        if not needs_reply:
+            return {
+                "followup_count": 0,
+                "emails_scanned": len(raw_messages),
+                "display_table": (
+                    f"✅ No follow-ups needed.\n\n"
+                    f"Scanned {len(raw_messages)} emails. "
+                    f"All emails received in the last {threshold} days "
+                    f"have been replied to or are from you."
+                ),
+                "instruction": "Inform the user no follow-ups are needed.",
+            }
+
+        # Step 4: Build display table
+        table_lines = [
+            f"**🔔 Follow-up Required — {len(needs_reply)} email(s)**\n",
+            f"*Emails older than {threshold} days with no reply sent*\n",
+            "| # | Date | From | Subject | Days Old |",
+            "|---|------|------|---------|----------|",
+        ]
+
+        followup_list = []
+        for i, msg in enumerate(needs_reply, 1):
+            received_raw = msg.get("receivedDateTime", "")
+            try:
+                received_dt = datetime.fromisoformat(
+                    received_raw.replace("Z", "+00:00")
+                )
+                age_days = (datetime.now(timezone.utc) - received_dt).days
+                date_display = received_dt.strftime("%d %b %Y")
+            except Exception:
+                age_days = "?"
+                date_display = received_raw[:10]
+
+            sender = (
+                msg.get("from", {}).get("emailAddress", {}).get("name") or "—"
+            )
+            subject = (msg.get("subject") or "(no subject)")[:50]
+
+            urgency = "🔴" if isinstance(age_days, int) and age_days >= 7 else "🟡"
+
+            table_lines.append(
+                f"| {i} | {date_display} | {sender} "
+                f"| {subject} | {urgency} {age_days} days |"
+            )
+
+            followup_list.append({
+                "id": msg.get("id"),
+                "subject": msg.get("subject"),
+                "sender": sender,
+                "sender_email": (
+                    msg.get("from", {}).get("emailAddress", {}).get("address") or ""
+                ),
+                "received_date": received_raw,
+                "age_days": age_days,
+            })
+
+        return {
+            "followup_count": len(needs_reply),
+            "emails_scanned": len(raw_messages),
+            "threshold_days": threshold,
+            "followups": followup_list,
+            "display_table": "\n".join(table_lines),
+            "instruction": (
+                "Display 'display_table' as markdown. "
+                "🔴 = 7+ days overdue, 🟡 = 3–6 days. "
+                "Offer to: compose a follow-up, add to tasks, or both."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="track_followups", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Tool: check_email_replied
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def check_email_replied(email_id: str) -> dict:
+    """
+    Check whether a specific email has been replied to.
+
+    Use this tool when the user asks things like:
+    - "Did I reply to John's email?"
+    - "Have I responded to this message?"
+    - "Check if I replied to this email"
+
+    Args:
+        email_id (str): Graph API ID of the email to check.
+
+    Returns:
+        dict with replied status and thread context.
+    """
+    logger.info(f"Tool called: check_email_replied (email_id={email_id[:20]}...)")
+
+    try:
+        # Step 1: Get current user profile
+        from graph.graph_client_factory import get_user_profile
+        profile = await get_user_profile()
+        user_email = (
+            profile.get("mail") or profile.get("userPrincipalName") or ""
+        ).lower()
+
+        # Step 2: Fetch the full thread
+        thread = await fetch_email_thread(email_id)
+
+        # Step 3: Check if any message in the thread was sent by the user
+        target_msg = next(
+            (m for m in thread if m.get("id") == email_id), thread[0]
+        )
+
+        user_replies = [
+            m for m in thread
+            if m.get("sender_email", "").lower() == user_email
+            and m.get("id") != email_id
+        ]
+
+        has_replied = len(user_replies) > 0
+        original_subject = target_msg.get("subject", "")
+        original_sender = target_msg.get("sender_name", "")
+
+        if has_replied:
+            latest_reply = user_replies[-1]
+            reply_date = latest_reply.get("received_date", "")[:10]
+            status_display = f"✅ Yes — you replied on {reply_date}"
+        else:
+            received_raw = target_msg.get("received_date", "")
+            try:
+                received_dt = datetime.fromisoformat(
+                    received_raw.replace("Z", "+00:00")
+                )
+                age_days = (datetime.now(timezone.utc) - received_dt).days
+            except Exception:
+                age_days = "unknown"
+            status_display = (
+                f"❌ No reply sent yet — email is {age_days} days old"
+            )
+
+        return {
+            "has_replied": has_replied,
+            "original_subject": original_subject,
+            "original_sender": original_sender,
+            "reply_count": len(user_replies),
+            "status_display": status_display,
+            "instruction": (
+                f"Display this to the user:\n\n"
+                f"**📧 Reply Status**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **Email** | {original_subject} |\n"
+                f"| **From** | {original_sender} |\n"
+                f"| **Replied** | {status_display} |\n\n"
+                + (
+                    "Offer to compose a follow-up reply."
+                    if not has_replied else
+                    f"You have sent {len(user_replies)} reply(ies) in this thread."
+                )
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="check_email_replied", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Tool: compose_followup
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def compose_followup(
+    email_id: str,
+    followup_context: str = "",
+) -> dict:
+    """
+    Compose a professional follow-up email for an unreplied message
+    and display it in chat for review. Uses the original email's
+    language automatically.
+
+    Use this tool when the user asks things like:
+    - "Compose a follow-up for John's email"
+    - "Write a polite follow-up to this unanswered email"
+    - "Draft a chaser for this overdue email"
+
+    Args:
+        email_id (str): Graph API ID of the email to follow up on.
+        followup_context (str): Optional extra context for the follow-up
+                                  e.g. "mention the deadline is this Friday".
+
+    Returns:
+        dict with follow-up composition instruction for LibreChat's LLM.
+    """
+    logger.info(f"Tool called: compose_followup (email_id={email_id[:20]}...)")
+
+    try:
+        # Step 1: Read the original email
+        original = await fetch_message_by_id(email_id)
+        original_subject = original.get("subject", "")
+        original_sender_name = (
+            original.get("from", {}).get("emailAddress", {}).get("name", "")
+        )
+        original_sender_email = (
+            original.get("from", {}).get("emailAddress", {}).get("address", "")
+        )
+        original_preview = original.get("body", {}).get("content", "")[:400]
+        received_raw = original.get("receivedDateTime", "")
+
+        # Step 2: Calculate days since received
+        try:
+            received_dt = datetime.fromisoformat(
+                received_raw.replace("Z", "+00:00")
+            )
+            age_days = (datetime.now(timezone.utc) - received_dt).days
+            original_date = received_dt.strftime("%d %B %Y")
+        except Exception:
+            age_days = "several"
+            original_date = received_raw[:10]
+
+        # Step 3: Detect language
+        lang_code, lang_name = detect_language(original_preview)
+        lang_instruction = get_language_instruction(lang_code, lang_name)
+
+        extra = f"\nAdditional context: {followup_context}" if followup_context else ""
+
+        return {
+            "original_subject": original_subject,
+            "original_sender": original_sender_name,
+            "original_sender_email": original_sender_email,
+            "age_days": age_days,
+            "language_detected": lang_name,
+            "instruction": (
+                f"Compose and display a professional follow-up email.\n"
+                f"{lang_instruction}\n\n"
+                f"Display this header first:\n"
+                f"**Follow-up to:** {original_sender_name} <{original_sender_email}>\n"
+                f"**Re:** {original_subject}\n"
+                f"**Original date:** {original_date} ({age_days} days ago)\n\n"
+                f"Then compose the follow-up body with these rules:\n"
+                f"- Start: Dear {original_sender_name},\n"
+                f"- Politely reference the original email sent {age_days} days ago\n"
+                f"- Gently ask for an update or response\n"
+                f"- Keep it brief — 2-3 sentences maximum\n"
+                f"- Never aggressive or demanding\n"
+                f"- End: Best regards,{extra}\n\n"
+                f"Original email context:\n{original_preview}\n\n"
+                f"After composing, ask:\n"
+                f"'Would you like me to save this follow-up to Outlook Drafts?\n"
+                f"If yes, call save_draft_to_outlook with:\n"
+                f"- to_emails: '{original_sender_email}'\n"
+                f"- subject: 'Re: {original_subject}'\n"
+                f"- body_text: the exact composed follow-up'"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="compose_followup", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Tool: add_task_todo
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def add_task_todo(
+    title: str,
+    due_date: str = "",
+    notes: str = "",
+    list_name: str = "Tasks",
+) -> dict:
+    """
+    Add a personal reminder or task to Microsoft To-Do.
+
+    Use this tool when the user asks things like:
+    - "Add a reminder to follow up on John's email"
+    - "Create a To-Do task for the project report"
+    - "Remind me to reply to this email by Friday"
+    - "Add this action item to my task list"
+
+    Args:
+        title (str): Task title — what needs to be done.
+        due_date (str): When the task is due e.g. "Friday",
+                         "2026-07-20", "end of week".
+        notes (str): Optional additional context or notes.
+        list_name (str): Which To-Do list to add to. Default "Tasks".
+
+    Returns:
+        dict with task ID and confirmation.
+    """
+    logger.info(f"Tool called: add_task_todo (title='{title}')")
+
+    try:
+        result = await create_todo_task(
+            title=title,
+            due_date=due_date,
+            notes=notes,
+            list_name=list_name,
+        )
+
+        return {
+            **result,
+            "instruction": (
+                f"Display this confirmation:\n\n"
+                f"**✅ Task Added to Microsoft To-Do**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **Task** | {title} |\n"
+                f"| **List** | {result.get('list_name', list_name)} |\n"
+                f"| **Due** | {due_date or 'Not set'} |\n"
+                + (f"| **Notes** | {notes[:80]} |\n" if notes else "")
+                + f"\n*Visible in Microsoft To-Do app and Outlook Tasks.*"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="add_task_todo", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Tool: add_task_planner
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def add_task_planner(
+    title: str,
+    due_date: str = "",
+    notes: str = "",
+    assigned_to_email: str = "",
+) -> dict:
+    """
+    Add a team task to Microsoft Planner.
+
+    Use this tool when the user asks things like:
+    - "Add this to Planner and assign to Jane"
+    - "Create a team task for the infrastructure review"
+    - "Add this action item to the team board"
+    - "Create a Planner card for this follow-up"
+
+    Args:
+        title (str): Task title.
+        due_date (str): Due date in any format.
+        notes (str): Task description or context.
+        assigned_to_email (str): Email of the team member to
+                                   assign the task to.
+
+    Returns:
+        dict with task ID and confirmation.
+    """
+    logger.info(f"Tool called: add_task_planner (title='{title}')")
+
+    try:
+        result = await create_planner_task(
+            title=title,
+            due_date=due_date,
+            notes=notes,
+            assigned_to_email=assigned_to_email,
+        )
+
+        if result.get("error"):
+            return result
+
+        return {
+            **result,
+            "instruction": (
+                f"Display this confirmation:\n\n"
+                f"**✅ Task Added to Microsoft Planner**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **Task** | {title} |\n"
+                f"| **Assigned to** | {assigned_to_email or 'Unassigned'} |\n"
+                f"| **Due** | {due_date or 'Not set'} |\n"
+                + (f"| **Notes** | {notes[:80]} |\n" if notes else "")
+                + f"\n*Visible in Microsoft Planner and Teams.*"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="add_task_planner", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Tool: list_tasks
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def list_tasks(
+    source: str = "todo",
+    list_name: str = "Tasks",
+    count: int = 20,
+) -> dict:
+    """
+    List pending tasks from Microsoft To-Do or Planner.
+
+    Use this tool when the user asks things like:
+    - "Show my To-Do tasks"
+    - "What tasks do I have?"
+    - "List my Planner tasks"
+    - "What's on my task list?"
+
+    Args:
+        source (str): "todo" for Microsoft To-Do,
+                       "planner" for Microsoft Planner.
+                       Default "todo".
+        list_name (str): To-Do list name. Default "Tasks".
+                          (Only used when source="todo")
+        count (int): Maximum tasks to return. Default 20.
+
+    Returns:
+        dict with task list and display table.
+    """
+    logger.info(f"Tool called: list_tasks (source={source})")
+
+    try:
+        source_lower = source.strip().lower()
+
+        if source_lower == "todo":
+            tasks = await get_todo_tasks(list_name=list_name, top=count)
+            source_label = "Microsoft To-Do"
+        else:
+            return {
+                "error": True,
+                "message": (
+                    "Planner task listing requires additional setup. "
+                    "Please use source='todo' to list Microsoft To-Do tasks."
+                ),
+            }
+
+        if not tasks:
+            return {
+                "tasks": [],
+                "count": 0,
+                "display_table": f"✅ No pending tasks in {source_label}.",
+                "instruction": f"Inform the user their {source_label} task list is empty.",
+            }
+
+        table_lines = [
+            f"**📋 {source_label} — Pending Tasks**\n",
+            "| # | Task | Due Date | Status |",
+            "|---|------|----------|--------|",
+        ]
+
+        for i, task in enumerate(tasks, 1):
+            due = task.get("due_date", "Not set")
+            status = task.get("status", "notStarted")
+            status_icon = "🔵" if status == "notStarted" else "🟡"
+            title = (task.get("title") or "")[:60]
+            table_lines.append(
+                f"| {i} | {title} | {due} | {status_icon} {status} |"
+            )
+
+        return {
+            "tasks": tasks,
+            "count": len(tasks),
+            "source": source_label,
+            "display_table": "\n".join(table_lines),
+            "instruction": (
+                "Display 'display_table' as markdown. "
+                "Offer to add new tasks or mark existing ones complete."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="list_tasks", logger=logger)
+```
+
+-----
+
+## PART E — `server.py` Update
+
+Add Phase 3 tool module imports to the existing import block in `server.py`.
+
+Find the Phase 2 section end:
+
+```python
+        # Semantic tools — semantic_search_emails
+        from tools import semantic_tools  # noqa: F401
+
+        logger.info("All tool modules imported and registered successfully")
+```
+
+Replace with:
+
+```python
+        # Semantic tools — semantic_search_emails
+        from tools import semantic_tools  # noqa: F401
+
+        # ── Phase 3 tools ────────────────────────────────────────────
+        # MOM tools — generate_mom, save_mom_as_draft
+        from tools import mom_tools  # noqa: F401
+
+        # Follow-up tools — track_followups, check_email_replied,
+        #                   compose_followup, add_task_todo,
+        #                   add_task_planner, list_tasks
+        from tools import followup_tools  # noqa: F401
+
+        logger.info("All tool modules imported and registered successfully")
+```
+
+-----
+
+## PART F — Phase 3 Definition of Done
+
+|Check                                                           |Status|
+|----------------------------------------------------------------|------|
+|`pip install langdetect` completed                              |⬜     |
+|`requirements.txt` updated                                      |⬜     |
+|`.env` updated with Phase 3 settings                            |⬜     |
+|`config/settings.py` updated                                    |⬜     |
+|Admin granted `Tasks.ReadWrite`, `Group.Read.All`               |⬜     |
+|`PLANNER_GROUP_ID` and `PLANNER_PLAN_ID` obtained from team     |⬜     |
+|All 6 new files created                                         |⬜     |
+|`server.py` updated with Phase 3 imports                        |⬜     |
+|`python server.py` starts cleanly                               |⬜     |
+|Health check shows 33 tools                                     |⬜     |
+|`generate_mom` produces formal MOM from email thread            |⬜     |
+|`save_mom_as_draft` saves MOM to Outlook Drafts                 |⬜     |
+|`track_followups` correctly identifies unreplied emails         |⬜     |
+|`check_email_replied` correctly detects reply status            |⬜     |
+|`compose_followup` produces polite follow-up in correct language|⬜     |
+|`add_task_todo` creates visible task in Microsoft To-Do         |⬜     |
+|`add_task_planner` creates task in Planner (after PLAN_ID set)  |⬜     |
+|`list_tasks` returns pending To-Do tasks in table format        |⬜     |
+|Language detection works for German/English emails              |⬜     |
+|Azure DevOps commit pushed with Phase 3 changes                 |⬜     |
+
+-----
+
+## Updated Roadmap
+
+|Phase      |Scope                                                   |Status       |
+|-----------|--------------------------------------------------------|-------------|
+|Phase 1    |Email read + search + summarise + calendar + attachments|✅ Complete   |
+|Phase 2    |Drafts + folder mgmt + flag + tasks + semantic search   |✅ Complete   |
+|**Phase 3**|MOM generation + follow-up tracking + To-Do + Planner   |← In Progress|
+|Phase 4    |MongoDB persistence — email index + vector store        |Pending      |
+|Phase 5    |Teams integration — channels, messages, transcripts     |Pending      |
+|Phase 6    |OneDrive + SharePoint document retrieval                |Pending      |
+
+-----
+
+*Review, apply, test, then commit to Azure DevOps.*
 
