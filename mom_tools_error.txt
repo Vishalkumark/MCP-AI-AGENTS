@@ -1,0 +1,99 @@
+python -m pytest tests/test_mom_followup.py -v
+========================================================= test session starts =========================================================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /opt/FiGPT_OutlookMCP/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /opt/FiGPT_OutlookMCP
+plugins: anyio-4.14.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 23 items                                                                                                                    
+
+tests/test_mom_followup.py::test_detect_english ERROR                                                                           [  4%]
+tests/test_mom_followup.py::test_detect_german ERROR                                                                            [  8%]
+tests/test_mom_followup.py::test_short_text_defaults_to_english ERROR                                                           [ 13%]
+tests/test_mom_followup.py::test_empty_text_defaults_to_english ERROR                                                           [ 17%]
+tests/test_mom_followup.py::test_language_instruction_english ERROR                                                             [ 21%]
+tests/test_mom_followup.py::test_language_instruction_german ERROR                                                              [ 26%]
+tests/test_mom_followup.py::test_generate_mom_from_thread ERROR                                                                 [ 30%]
+tests/test_mom_followup.py::test_generate_mom_from_single_email ERROR                                                           [ 34%]
+tests/test_mom_followup.py::test_generate_mom_handles_error ERROR                                                               [ 39%]
+tests/test_mom_followup.py::test_saves_mom_draft_successfully ERROR                                                             [ 43%]
+tests/test_mom_followup.py::test_returns_error_for_empty_recipients ERROR                                                       [ 47%]
+tests/test_mom_followup.py::test_identifies_overdue_emails ERROR                                                                [ 52%]
+tests/test_mom_followup.py::test_returns_clear_when_no_followups ERROR                                                          [ 56%]
+tests/test_mom_followup.py::test_handles_empty_inbox ERROR                                                                      [ 60%]
+tests/test_mom_followup.py::test_detects_replied_email ERROR                                                                    [ 65%]
+tests/test_mom_followup.py::test_detects_unreplied_email ERROR                                                                  [ 69%]
+tests/test_mom_followup.py::test_returns_instruction_with_sender_details ERROR                                                  [ 73%]
+tests/test_mom_followup.py::test_creates_todo_task_successfully ERROR                                                           [ 78%]
+tests/test_mom_followup.py::test_handles_task_creation_error ERROR                                                              [ 82%]
+tests/test_mom_followup.py::test_returns_error_when_plan_id_missing ERROR                                                       [ 86%]
+tests/test_mom_followup.py::test_creates_planner_task_successfully ERROR                                                        [ 91%]
+tests/test_mom_followup.py::test_returns_task_table_for_todo ERROR                                                              [ 95%]
+tests/test_mom_followup.py::test_returns_empty_message_when_no_tasks ERROR                                                      [100%]
+
+=============================================================== ERRORS ================================================================
+________________________________________________ ERROR at setup of test_detect_english ________________________________________________
+file /opt/FiGPT_OutlookMCP/tests/test_mom_followup.py, line 38
+  def test_detect_english(self):
+E       fixture 'self' not found
+>       available fixtures: _asyncio_loop_factory, _class_scoped_runner, _function_scoped_runner, _module_scoped_runner, _package_scoped_runner, _session_scoped_runner, anyio_backend, anyio_backend_name, anyio_backend_options, cache, capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, event_loop_policy, free_tcp_port, free_tcp_port_factory, free_udp_port, free_udp_port_factory, monkeypatch, pytestconfig, record_property, record_testsuite_property, record_xml_attribute, recwarn, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, unused_tcp_port, unused_tcp_port_factory, unused_udp_port, unused_udp_port_factory
+>       use 'pytest --fixtures [testpath]' for help on them.
+
+/opt/FiGPT_OutlookMCP/tests/test_mom_followup.py:38
+
+___________________________________________ ERROR at setup of test_generate_mom_from_thread ___________________________________________
+file /opt/FiGPT_OutlookMCP/tests/test_mom_followup.py, line 148
+  @pytest.mark.asyncio
+  async def test_generate_mom_from_thread(self):
+      """
+      generate_mom() with use_thread=True should return a structured
+      instruction containing MOM format, attendees, and email digest.
+      """
+      fake_thread = self._make_fake_thread()
+
+      with patch(
+          "tools.mom_tools.fetch_email_thread",
+          new=AsyncMock(return_value=fake_thread)
+      ):
+          from tools.mom_tools import generate_mom
+          result = await generate_mom(
+              email_id="msg-001",
+              use_thread=True,
+          )
+
+      assert result["email_count"] == 2
+      assert "john@company.com" in result["participants"]
+      assert "jane@company.com" in result["participants"]
+      assert result["meeting_subject"] == "Project Kickoff Meeting"
+      assert "MINUTES OF MEETING" in result["instruction"]
+      assert "ATTENDEES" in result["instruction"]
+      assert "ACTION ITEMS" in result["instruction"]
+      assert "DECISIONS MADE" in result["instruction"]
+E       fixture 'self' not found
+>       available fixtures: _asyncio_loop_factory, _class_scoped_runner, _function_scoped_runner, _module_scoped_runner, _package_scoped_runner, _session_scoped_runner, anyio_backend, anyio_backend_name, anyio_backend_options, cache, capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, event_loop_policy, free_tcp_port, free_tcp_port_factory, free_udp_port, free_udp_port_factory, monkeypatch, pytestconfig, record_property, record_testsuite_property, record_xml_attribute, recwarn, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, unused_tcp_port, unused_tcp_port_factory, unused_udp_port, unused_udp_port_factory
+>       use 'pytest --fixtures [testpath]' for help on them.
+
+======================================================= short test summary info =======================================================
+ERROR tests/test_mom_followup.py::test_detect_english
+ERROR tests/test_mom_followup.py::test_detect_german
+ERROR tests/test_mom_followup.py::test_short_text_defaults_to_english
+ERROR tests/test_mom_followup.py::test_empty_text_defaults_to_english
+ERROR tests/test_mom_followup.py::test_language_instruction_english
+ERROR tests/test_mom_followup.py::test_language_instruction_german
+ERROR tests/test_mom_followup.py::test_generate_mom_from_thread
+ERROR tests/test_mom_followup.py::test_generate_mom_from_single_email
+ERROR tests/test_mom_followup.py::test_generate_mom_handles_error
+ERROR tests/test_mom_followup.py::test_saves_mom_draft_successfully
+ERROR tests/test_mom_followup.py::test_returns_error_for_empty_recipients
+ERROR tests/test_mom_followup.py::test_identifies_overdue_emails
+ERROR tests/test_mom_followup.py::test_returns_clear_when_no_followups
+ERROR tests/test_mom_followup.py::test_handles_empty_inbox
+ERROR tests/test_mom_followup.py::test_detects_replied_email
+ERROR tests/test_mom_followup.py::test_detects_unreplied_email
+ERROR tests/test_mom_followup.py::test_returns_instruction_with_sender_details
+ERROR tests/test_mom_followup.py::test_creates_todo_task_successfully
+ERROR tests/test_mom_followup.py::test_handles_task_creation_error
+ERROR tests/test_mom_followup.py::test_returns_error_when_plan_id_missing
+ERROR tests/test_mom_followup.py::test_creates_planner_task_successfully
+ERROR tests/test_mom_followup.py::test_returns_task_table_for_todo
+ERROR tests/test_mom_followup.py::test_returns_empty_message_when_no_tasks
