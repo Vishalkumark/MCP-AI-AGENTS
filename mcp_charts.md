@@ -822,6 +822,137 @@ Create a bar chart comparing my task count in To-Do vs Planner
 
 *Apply changes, restart server, verify health check shows 34 tools.*
 
+---
+
+You’re right — LibreChat doesn’t render data:image/png;base64,... inline. It treats it as plain text. Here are your real options:
+
+Options
+Option 1 — SVG (Best fit for LibreChat) ✅ Recommended
+Generate charts as SVG using matplotlib — LibreChat renders SVG natively in chat. No base64, no file path shown, just the chart.
+Option 2 — HTML file
+Save chart as a self-contained .html file with the chart embedded. User clicks a link to open it in browser.
+Option 3 — Plotly HTML
+Use plotly instead of matplotlib — generates interactive HTML charts. User opens in browser. More features (zoom, hover tooltips).
+Option 4 — ASCII chart in chat
+Render a simple text-based bar chart directly in markdown. No files, no images — works everywhere. Limited visual quality.
+
+Recommendation
+Go with Option 1 (SVG) for inline viewing + Option 2 (HTML) as downloadable backup.
+SVG renders natively in LibreChat’s markdown. Clean, no lengthy addresses, no base64 strings shown.
+
+Fix — Update tools/chart_tools.py
+Step 1 — Change output format to SVG
+Replace _save_and_encode function:
+
+def _save_as_svg(fig: plt.Figure, filename: str) -> tuple[str, str]:
+    """
+    Save a matplotlib figure as SVG and read it as a string.
+    SVG renders natively in LibreChat's markdown.
+
+    Args:
+        fig (plt.Figure): The matplotlib figure to save.
+        filename (str): Output file name (without path).
+
+    Returns:
+        tuple[str, str]: (file_path, svg_string)
+    """
+    chart_dir = _ensure_chart_dir()
+    file_path = chart_dir / filename
+
+    fig.savefig(
+        file_path,
+        format="svg",
+        bbox_inches="tight",
+        facecolor="white",
+    )
+    plt.close(fig)
+
+    # Read SVG as string for inline rendering
+    svg_string = file_path.read_text(encoding="utf-8")
+
+    logger.info(f"SVG chart saved: {file_path}")
+    return str(file_path), svg_string
+
+
+Step 2 — Change filename generator
+
+def _make_filename(chart_type: str) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    short_id = str(uuid.uuid4())[:4]
+    return f"{chart_type}_chart_{timestamp}_{short_id}.svg"  # .svg not .png
+
+
+Step 3 — Update all three internal generators
+In _generate_bar_chart, _generate_line_chart, _generate_pie_chart — change the last two lines of each from:
+
+    filename = _make_filename("bar")
+    return _save_and_encode(fig, filename)
+
+
+To:
+
+    filename = _make_filename("bar")
+    return _save_as_svg(fig, filename)
+
+
+Same for line and pie.
+Step 4 — Update generate_chart tool return
+Find the instruction field in the return block and replace:
+
+            "instruction": (
+                f"A {chart_type_clean} chart titled '{title}' has been "
+                f"generated with {len(label_list)} data points.\n\n"
+                f"Display the chart to the user using this markdown:\n\n"
+                f"**📊 {title}**\n\n"
+                f"![{title}](data:image/png;base64,{encoded})\n\n"
+                f"*Chart saved as: `{file_name}`*\n\n"
+                f"Then summarise the key insight from the chart data in "
+                f"1-2 sentences."
+            ),
+
+
+Replace with:
+
+            "instruction": (
+                f"Display this SVG chart directly in the chat — "
+                f"render it as raw SVG markup, do not wrap it in "
+                f"a code block:\n\n"
+                f"**📊 {title}**\n\n"
+                f"{svg_content}\n\n"
+                f"Then in 1-2 sentences summarise the key insight "
+                f"from this data."
+            ),
+
+
+Also rename encoded to svg_content in the variable assignment:
+
+        file_path, svg_content = _generate_bar_chart(...)
+        # or line / pie
+
+
+And update the return dict:
+
+        return {
+            "chart_type": chart_type_clean,
+            "title": title,
+            "file_name": file_name,
+            "file_path": file_path,
+            "data_points": len(label_list),
+            "instruction": (...)  # updated above
+        }
+
+
+Remove "image_base64" from the return dict entirely.
+
+Result after fix
+LibreChat will render the SVG directly in chat — the chart appears as a proper visual, no long addresses, no base64 strings. The SVG file is also saved to temp_attachments/charts/ as a backup.
+Restart server and test:
+
+List my last 10 emails and show a bar chart of top 5 senders
+
+
+
+
 
 
 
