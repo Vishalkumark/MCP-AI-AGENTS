@@ -668,3 +668,67 @@ assert (
     or "No pending" in result["display_table"]
 )
 ```
+
+
+
+#!/bin/bash
+
+# =============================================================================
+
+# run_all_tests.sh
+
+# Full test suite runner — lists all tools then runs all tests
+
+# Usage: bash run_all_tests.sh
+
+# =============================================================================
+
+echo “”
+echo “============================================================”
+echo “  outlook-ai-agent-mcp — Full Test Suite”
+echo “============================================================”
+
+# Step 1: Check server is running and list all tools
+
+echo “”
+echo “[ STEP 1 ] Checking server health and listing tools…”
+echo “————————————————————”
+
+HEALTH=$(curl -s http://localhost:8000/health 2>/dev/null)
+
+if [ -z “$HEALTH” ]; then
+echo “  WARNING: Server not running on localhost:8000”
+echo “  Start it with: python server.py”
+echo “  Skipping tool listing — running tests only.”
+else
+TOOL_COUNT=$(echo “$HEALTH” | python3 -c “import sys,json; d=json.load(sys.stdin); print(d.get(‘tools_registered’,0))” 2>/dev/null)
+echo “  Status      : $(echo “$HEALTH” | python3 -c “import sys,json; d=json.load(sys.stdin); print(d.get(‘status’,‘unknown’))” 2>/dev/null)”
+echo “  Server      : $(echo “$HEALTH” | python3 -c “import sys,json; d=json.load(sys.stdin); print(d.get(‘server’,‘unknown’))” 2>/dev/null)”
+echo “  Tools count : $TOOL_COUNT”
+echo “”
+echo “  Tools registered:”
+echo “$HEALTH” | python3 -c “
+import sys, json
+d = json.load(sys.stdin)
+tools = d.get(‘tools’, [])
+for i, t in enumerate(tools, 1):
+print(f’    {i:>2}. {t}’)
+“ 2>/dev/null
+fi
+
+# Step 2: Run all test files
+
+echo “”
+echo “[ STEP 2 ] Running all tests…”
+echo “————————————————————”
+
+python -m pytest tests/ -v   
+–tb=short   
+–no-header   
+-q 2>&1 | tail -50
+
+echo “”
+echo “============================================================”
+echo “  Done.”
+echo “============================================================”
+echo “”
