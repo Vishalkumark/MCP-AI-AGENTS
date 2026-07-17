@@ -732,3 +732,217 @@ echo “============================================================”
 echo “  Done.”
 echo “============================================================”
 echo “”
+
+
+-------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------
+
+
+(.venv) prajapativ@FGSV2187:/opt/FiGPT_OutlookMCP$ #!/bin/bash
+# =============================================================================
+# run_all_tests.sh
+# Full test suite runner — lists all tools then runs all tests
+# Usage: bash run_all_tests.sh
+# =============================================================================
+
+echo ""
+echo "============================================================"
+echo "  outlook-ai-agent-mcp — Full Test Suite"
+echo "============================================================"
+
+# Step 1: Check server is running and list all tools
+echo ""
+echo "[ STEP 1 ] Checking server health and listing tools…"
+echo "————————————————————"
+
+HEALTH=$(curl -s http://localhost:8000/health 2>/dev/null)
+
+echo ""==========================================================="n; d=json.load(sys.stdin); print(d.get(‘server’,‘unknown’))" 2>/dev/
+
+============================================================
+  outlook-ai-agent-mcp — Full Test Suite
+============================================================
+
+[ STEP 1 ] Checking server health and listing tools…
+————————————————————
+  Status      : 
+  Server      : 
+  Tools count : 
+
+  Tools registered:
+
+[ STEP 2 ] Running all tests…
+————————————————————
+========================================================= test session starts =========================================================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /opt/FiGPT_OutlookMCP/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /opt/FiGPT_OutlookMCP
+plugins: anyio-4.14.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 65 items                                                                                                                    
+
+
+tests/test_attachment_tools.py::test_summarise_attachment_handles_empty_text FAILED                                             [  4%]
+tests/test_charts.py::TestGenerateChart::test_bar_chart_generates_successfully FAILED                                           [ 16%]
+tests/test_draft_tools.py::TestCreateDraftEmail::test_returns_draft_id_on_success FAILED                                        [ 30%]
+tests/test_draft_tools.py::TestCreateDraftEmail::test_returns_error_for_empty_recipients FAILED                                 [ 32%]
+tests/test_mail_tools.py::test_list_emails_returns_correct_shape FAILED                                                         [ 49%]
+
+============================================================== FAILURES ===============================================================
+____________________________________________ test_summarise_attachment_handles_empty_text _____________________________________________
+
+    @pytest.mark.asyncio
+    async def test_summarise_attachment_handles_empty_text():
+        """
+        If the parser extracts no text (blank or corrupted file),
+        summarise_attachment() should return a clear message instead of
+        calling the LLM with an empty prompt.
+        """
+        fake_bytes = b""
+        fake_parse_result = {
+            "text": "",   # Empty — nothing extracted
+            "file_type": "pdf",
+            "used_ocr": False,
+        }
+    
+        with patch(
+            "tools.attachment_tools.download_attachment",
+            new=AsyncMock(return_value=(fake_bytes, "Empty.pdf", "application/pdf"))
+        ), patch(
+            "tools.attachment_tools.parse_attachment",
+            new=AsyncMock(return_value=fake_parse_result)
+        ):
+            from tools.attachment_tools import summarise_attachment
+            result = await summarise_attachment(email_id="msg-001", attachment_id="att-001")
+    
+        # Should NOT call the LLM — should return the "no readable text" message.
+>       assert "No readable text" in result["summary"]
+                                     ^^^^^^^^^^^^^^^^^
+E       KeyError: 'summary'
+
+tests/test_attachment_tools.py:109: KeyError
+_______________________________________ TestGenerateChart.test_bar_chart_generates_successfully _______________________________________
+
+self = <tests.test_charts.TestGenerateChart object at 0x719c1b237f20>
+
+    @pytest.mark.asyncio
+    async def test_bar_chart_generates_successfully(self):
+        """
+        generate_chart() with type='bar' should return a file path,
+        base64 string, and instruction containing markdown image tag.
+        """
+        with patch("tools.chart_tools._generate_bar_chart") as mock_bar:
+            mock_bar.return_value = ("/tmp/bar_chart_test.png", "base64string==")
+    
+            from tools.chart_tools import generate_chart
+            result = await generate_chart(
+                chart_type="bar",
+                labels="John, Jane, HR",
+                values="15, 8, 3",
+                title="Emails by Sender",
+                y_label="Email Count",
+            )
+    
+        assert result.get("error") is None or "error" not in result
+        assert result["chart_type"] == "bar"
+        assert result["data_points"] == 3
+>       assert "base64string" in result["image_base64"]
+                                 ^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'image_base64'
+
+tests/test_charts.py:39: KeyError
+________________________________________ TestCreateDraftEmail.test_returns_draft_id_on_success ________________________________________
+
+self = <tests.test_draft_tools.TestCreateDraftEmail object at 0x719c185ce6c0>
+
+    @pytest.mark.asyncio
+    async def test_returns_draft_id_on_success(self):
+        """
+        create_draft_email() should return a draft_id and status
+        confirmation when the draft is created successfully.
+        """
+        fake_result = {
+            "draft_id": "draft-abc-123",
+            "subject": "Project Status Update",
+            "to": ["john@company.com"],
+            "status": "Draft saved to Drafts folder",
+            "web_link": "",
+        }
+    
+        with patch(
+            "tools.draft_tools.create_draft",
+            new=AsyncMock(return_value=fake_result)
+        ):
+>           from tools.draft_tools import create_draft_email
+E           ImportError: cannot import name 'create_draft_email' from 'tools.draft_tools' (/opt/FiGPT_OutlookMCP/tools/draft_tools.py)
+
+tests/test_draft_tools.py:98: ImportError
+____________________________________ TestCreateDraftEmail.test_returns_error_for_empty_recipients _____________________________________
+
+self = <tests.test_draft_tools.TestCreateDraftEmail object at 0x719c185cea50>
+
+    @pytest.mark.asyncio
+    async def test_returns_error_for_empty_recipients(self):
+        """
+        create_draft_email() should return an error dict when no
+        valid recipient email addresses are provided.
+        """
+>       from tools.draft_tools import create_draft_email
+E       ImportError: cannot import name 'create_draft_email' from 'tools.draft_tools' (/opt/FiGPT_OutlookMCP/tools/draft_tools.py)
+
+tests/test_draft_tools.py:115: ImportError
+_______________________________________________ test_list_emails_returns_correct_shape ________________________________________________
+
+    @pytest.mark.asyncio
+    async def test_list_emails_returns_correct_shape():
+        """
+        list_emails() should return a list of dicts, each with the fields
+        defined in its docstring (id, subject, sender, etc.).
+        """
+        # Step 1: Build a fake raw message response — simulates what
+        #         graph/mail_client.fetch_recent_messages() would return.
+        fake_messages = [
+            {
+                "id": "msg-001",
+                "subject": "Q3 Budget Review",
+                "from": {
+                    "emailAddress": {
+                        "name": "Hans Mueller",
+                        "address": "h.mueller@fichtner.de"
+                    }
+                },
+                "receivedDateTime": "2025-01-15T09:30:00Z",
+                "hasAttachments": True,
+                "bodyPreview": "Please find the Q3 budget review attached...",
+            }
+        ]
+    
+        # Step 2: Patch fetch_recent_messages so no real Graph API call is made.
+        with patch(
+            "tools.email_tools.fetch_recent_messages",
+            new=AsyncMock(return_value=fake_messages)
+        ):
+            from tools.email_tools import list_emails
+            result = await list_emails(count=5)
+    
+        # Step 3: Verify the output shape matches the tool's contract.
+>       assert isinstance(result, list)
+E       assert False
+E        +  where False = isinstance({'emails': [{'id': 'msg-001', 'subject': 'Q3 Budget Review', 'sender': 'Hans Mueller', 'sender_email': 'h.mueller@fichtner.de', ...}], 'count': 1, 'display_table': '| # | Date | From | Subject | Preview | 📎 |\n|---|------|------|---------|---------|-----|\n| 1 | 15 Jan 2025 09:30 | Hans Mueller | Q3 Budget Review | Please find the Q3 budget review attached... | ✅ |', 'instruction': "Display the 'display_table' field as a markdown table. Do not reformat or summarise it — show it exactly as given. Then offer to read, summarise, or search any specific email."}, list)
+
+tests/test_mail_tools.py:59: AssertionError
+======================================================= short test summary info =======================================================
+FAILED tests/test_attachment_tools.py::test_summarise_attachment_handles_empty_text - KeyError: 'summary'
+FAILED tests/test_charts.py::TestGenerateChart::test_bar_chart_generates_successfully - KeyError: 'image_base64'
+FAILED tests/test_draft_tools.py::TestCreateDraftEmail::test_returns_draft_id_on_success - ImportError: cannot import name 'create_draft_email' from 'tools.draft_tools' (/opt/FiGPT_OutlookMCP/tools/draft_tools.py)
+FAILED tests/test_draft_tools.py::TestCreateDraftEmail::test_returns_error_for_empty_recipients - ImportError: cannot import name 'create_draft_email' from 'tools.draft_tools' (/opt/FiGPT_OutlookMCP/tools/draft_tools.py)
+FAILED tests/test_mail_tools.py::test_list_emails_returns_correct_shape - assert False
+==================================================== 5 failed, 60 passed in 6.78s =====================================================
+–tb=short: command not found
+–no-header: command not found
+-q: command not found
+
+============================================================
+  Done.
+============================================================
+
