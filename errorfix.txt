@@ -1910,6 +1910,402 @@ read-email		Read email content
 
 List all events from today
 
+
+
 Action:
 mark-read		Mark as read
 mark-unread		Mark as unread
+
+
+
+
+--------------------------------------------------------------
+
+
+
+(.venv) prajapativ@FGSV2187:/opt/FiGPT_OutlookMCP$ python -m pytest tests/test_mom_followup.py -v
+========================================================= test session starts =========================================================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /opt/FiGPT_OutlookMCP/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /opt/FiGPT_OutlookMCP
+plugins: anyio-4.14.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 23 items                                                                                                                    
+
+tests/test_mom_followup.py::test_detect_english PASSED                                                                          [  4%]
+tests/test_mom_followup.py::test_detect_german PASSED                                                                           [  8%]
+tests/test_mom_followup.py::test_short_text_defaults_to_english PASSED                                                          [ 13%]
+tests/test_mom_followup.py::test_empty_text_defaults_to_english PASSED                                                          [ 17%]
+tests/test_mom_followup.py::test_language_instruction_english PASSED                                                            [ 21%]
+tests/test_mom_followup.py::test_language_instruction_german PASSED                                                             [ 26%]
+tests/test_mom_followup.py::test_generate_mom_from_thread PASSED                                                                [ 30%]
+tests/test_mom_followup.py::test_generate_mom_from_single_email PASSED                                                          [ 34%]
+tests/test_mom_followup.py::test_generate_mom_handles_error PASSED                                                              [ 39%]
+tests/test_mom_followup.py::test_saves_mom_draft_successfully PASSED                                                            [ 43%]
+tests/test_mom_followup.py::test_save_mom_returns_error_for_empty_recipients PASSED                                             [ 47%]
+tests/test_mom_followup.py::test_identifies_overdue_emails FAILED                                                               [ 52%]
+tests/test_mom_followup.py::test_returns_clear_when_no_followups FAILED                                                         [ 56%]
+tests/test_mom_followup.py::test_track_followups_handles_empty_inbox FAILED                                                     [ 60%]
+tests/test_mom_followup.py::test_detects_replied_email FAILED                                                                   [ 65%]
+tests/test_mom_followup.py::test_detects_unreplied_email FAILED                                                                 [ 69%]
+tests/test_mom_followup.py::test_compose_followup_returns_instruction_with_sender PASSED                                        [ 73%]
+tests/test_mom_followup.py::test_creates_todo_task_successfully FAILED                                                          [ 78%]
+tests/test_mom_followup.py::test_todo_task_handles_creation_error PASSED                                                        [ 82%]
+tests/test_mom_followup.py::test_planner_returns_error_when_plan_id_missing PASSED                                              [ 86%]
+tests/test_mom_followup.py::test_creates_planner_task_successfully PASSED                                                       [ 91%]
+tests/test_mom_followup.py::test_list_tasks_returns_table PASSED                                                                [ 95%]
+tests/test_mom_followup.py::test_list_tasks_returns_empty_message PASSED                                                        [100%]
+
+============================================================== FAILURES ===============================================================
+___________________________________________________ test_identifies_overdue_emails ____________________________________________________
+
+    @pytest.mark.asyncio
+    async def test_identifies_overdue_emails():
+        """
+        track_followups() should flag emails older than the threshold
+        that were not sent by the current user.
+        """
+        fake_profile = {
+        "mail": "me@company.com",
+        "userPrincipalName": "me@company.com",
+        }
+        fake_messages = [_make_old_email(days_old=5)]
+    
+>       with patch(
+        "tools.followup_tools.get_user_profile",
+        new=AsyncMock(return_value=fake_profile)
+        ), patch(
+        "tools.followup_tools.fetch_recent_messages",
+        new=AsyncMock(return_value=fake_messages)
+        ):
+
+tests/test_mom_followup.py:297: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/lib/python3.12/unittest/mock.py:1458: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <unittest.mock._patch object at 0x7780a7fc71a0>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute 'get_user_profile'
+
+/usr/lib/python3.12/unittest/mock.py:1431: AttributeError
+________________________________________________ test_returns_clear_when_no_followups _________________________________________________
+
+    @pytest.mark.asyncio
+    async def test_returns_clear_when_no_followups():
+        """
+        track_followups() should return a positive confirmation
+        when all emails are recent.
+        """
+        fake_profile = {
+        "mail": "me@company.com",
+        "userPrincipalName": "me@company.com",
+        }
+        fake_messages = [_make_old_email(days_old=1)]
+    
+>       with patch(
+        "tools.followup_tools.get_user_profile",
+        new=AsyncMock(return_value=fake_profile)
+        ), patch(
+        "tools.followup_tools.fetch_recent_messages",
+        new=AsyncMock(return_value=fake_messages)
+        ):
+
+tests/test_mom_followup.py:322: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/lib/python3.12/unittest/mock.py:1458: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <unittest.mock._patch object at 0x7780a7d3c830>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute 'get_user_profile'
+
+/usr/lib/python3.12/unittest/mock.py:1431: AttributeError
+______________________________________________ test_track_followups_handles_empty_inbox _______________________________________________
+
+    @pytest.mark.asyncio
+    async def test_track_followups_handles_empty_inbox():
+        """
+        track_followups() should handle an empty inbox gracefully.
+        """
+        fake_profile = {
+        "mail": "me@company.com",
+        "userPrincipalName": "me@company.com",
+        }
+    
+>       with patch(
+        "tools.followup_tools.get_user_profile",
+        new=AsyncMock(return_value=fake_profile)
+        ), patch(
+        "tools.followup_tools.fetch_recent_messages",
+        new=AsyncMock(return_value=[])
+        ):
+
+tests/test_mom_followup.py:345: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/lib/python3.12/unittest/mock.py:1458: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <unittest.mock._patch object at 0x7780a7d3e360>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute 'get_user_profile'
+
+/usr/lib/python3.12/unittest/mock.py:1431: AttributeError
+_____________________________________________________ test_detects_replied_email ______________________________________________________
+
+    @pytest.mark.asyncio
+    async def test_detects_replied_email():
+        """
+        check_email_replied() should correctly detect when the
+        current user has sent a reply in the thread.
+        """
+        fake_profile = {
+        "mail": "me@company.com",
+        "userPrincipalName": "me@company.com",
+        }
+        fake_thread = [
+        {
+        "id": "msg-001",
+        "subject": "Budget Request",
+        "sender_name": "John",
+        "sender_email": "john@company.com",
+        "to_recipients": [],
+        "cc_recipients": [],
+        "received_date": "2026-07-01T09:00:00+00:00",
+        "body": "Please approve the budget.",
+        "has_attachments": False,
+        "is_draft": False,
+        },
+        {
+        "id": "msg-002",
+        "subject": "Re: Budget Request",
+        "sender_name": "Me",
+        "sender_email": "me@company.com",
+        "to_recipients": [],
+        "cc_recipients": [],
+        "received_date": "2026-07-02T09:00:00+00:00",
+        "body": "Approved.",
+        "has_attachments": False,
+        "is_draft": False,
+        },
+        ]
+    
+>       with patch(
+        "tools.followup_tools.get_user_profile",
+        new=AsyncMock(return_value=fake_profile)
+        ), patch(
+        "tools.followup_tools.fetch_email_thread",
+        new=AsyncMock(return_value=fake_thread)
+        ):
+
+tests/test_mom_followup.py:394: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/lib/python3.12/unittest/mock.py:1458: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <unittest.mock._patch object at 0x7780a7d3c9e0>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute 'get_user_profile'
+
+/usr/lib/python3.12/unittest/mock.py:1431: AttributeError
+____________________________________________________ test_detects_unreplied_email _____________________________________________________
+
+    @pytest.mark.asyncio
+    async def test_detects_unreplied_email():
+        """
+        check_email_replied() should correctly detect when no reply
+        has been sent by the current user.
+        """
+        fake_profile = {
+        "mail": "me@company.com",
+        "userPrincipalName": "me@company.com",
+        }
+        fake_thread = [
+        {
+        "id": "msg-001",
+        "subject": "Pending Request",
+        "sender_name": "John",
+        "sender_email": "john@company.com",
+        "to_recipients": [],
+        "cc_recipients": [],
+        "received_date": "2026-06-25T09:00:00+00:00",
+        "body": "Please confirm.",
+        "has_attachments": False,
+        "is_draft": False,
+        }
+        ]
+    
+>       with patch(
+        "tools.followup_tools.get_user_profile",
+        new=AsyncMock(return_value=fake_profile)
+        ), patch(
+        "tools.followup_tools.fetch_email_thread",
+        new=AsyncMock(return_value=fake_thread)
+        ):
+
+tests/test_mom_followup.py:433: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/lib/python3.12/unittest/mock.py:1458: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <unittest.mock._patch object at 0x7780a840ba40>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute 'get_user_profile'
+
+/usr/lib/python3.12/unittest/mock.py:1431: AttributeError
+_________________________________________________ test_creates_todo_task_successfully _________________________________________________
+
+    @pytest.mark.asyncio
+    async def test_creates_todo_task_successfully():
+        """
+        add_task_todo() should call create_todo_task and return
+        a confirmation with task details.
+        """
+        fake_result = {
+        "task_id": "todo-task-001",
+        "title": "Follow up on budget email",
+        "list_name": "Tasks",
+        "due_date": "2026-07-18",
+        "status": "Task created in Microsoft To-Do - Tasks",
+        }
+    
+        with patch(
+        "tools.followup_tools.create_todo_task",
+        new=AsyncMock(return_value=fake_result)
+        ):
+            from tools.followup_tools import add_task_todo
+            result = await add_task_todo(
+                title="Follow up on budget email",
+                due_date="2026-07-18",
+                notes="Email from John on 1 July",
+            )
+    
+        assert result["task_id"] == "todo-task-001"
+        assert "To-Do" in result["instruction"]
+>       assert "OK" in result["instruction"]
+E       AssertionError: assert 'OK' in 'Display this confirmation:\n\n**✅ Task Added to Microsoft To-Do**\n\n| Field | Details |\n|---|---|\n| **Task** | Follow up on budget email |\n| **List** | Tasks |\n| **Due** | 2026-07-18 |\n| **Notes** | Email from John on 1 July |\n\n*Visible in Microsoft To-Do app and Outlook Tasks.*'
+
+tests/test_mom_followup.py:517: AssertionError
+======================================================= short test summary info =======================================================
+FAILED tests/test_mom_followup.py::test_identifies_overdue_emails - AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute '...
+FAILED tests/test_mom_followup.py::test_returns_clear_when_no_followups - AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute '...
+FAILED tests/test_mom_followup.py::test_track_followups_handles_empty_inbox - AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute '...
+FAILED tests/test_mom_followup.py::test_detects_replied_email - AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute '...
+FAILED tests/test_mom_followup.py::test_detects_unreplied_email - AttributeError: <module 'tools.followup_tools' from '/opt/FiGPT_OutlookMCP/tools/followup_tools.py'> does not have the attribute '...
+FAILED tests/test_mom_followup.py::test_creates_todo_task_successfully - AssertionError: assert 'OK' in 'Display this confirmation:\n\n**✅ Task Added to Microsoft To-Do**\n\n| Field | Details |\n|---|--...
+==================================================== 6 failed, 17 passed in 1.59s =====================================================
