@@ -1541,3 +1541,177 @@ class TestAuditLogger:
 -----
 
 *Apply in order: Part B → C → D → E → F → G → H → verify with test suite.*
+
+
+---
+---
+
+Clear and structured. Let me map every tool to exactly what needs to be added — no ambiguity.
+
+Three things to add per tool
+
+1. log_tool_call()      → top of every tool, after input parsing
+2. governance rules     → appended to the instruction field
+3. validate_*()         → before returning the result
+
+
+Not every tool needs all three. Here’s the exact map:
+
+Complete Integration Map
+tools/email_tools.py
+
+
+
+|Tool                    |log_tool_call                                              |governance                                 |validate                               |
+|------------------------|-----------------------------------------------------------|-------------------------------------------|---------------------------------------|
+|`list_emails`           |✅ `{"count": safe_count}`                                  |❌ not needed                               |`validate_email_list(result["emails"])`|
+|`read_email`            |✅ `{"email_id": email_id[:12]}`                            |❌ not needed                               |`validate_email_body(body, subject)`   |
+|`search_emails`         |✅ `{"keyword": keyword, "count": safe_count}`              |❌ not needed                               |`validate_email_list(result["emails"])`|
+|`summarise_email`       |✅ `{"email_id": email_id[:12]}`                            |`get_email_rules()` → append to instruction|`validate_email_body(body, subject)`   |
+|`list_emails_paged`     |✅ `{"count": safe_count, "page": page}`                    |❌ not needed                               |`validate_email_list(result["emails"])`|
+|`search_emails_advanced`|✅ `{"keyword": keyword, "sender": sender_email}`           |❌ not needed                               |`validate_email_list(result["emails"])`|
+|`export_emails_markdown`|✅ `{"count": safe_count}`                                  |❌ not needed                               |❌ not needed                           |
+|`mark_email_read`       |✅ `{"email_id": email_id[:12], "is_read": is_read}`        |❌ not needed                               |❌ not needed                           |
+|`flag_email`            |✅ `{"email_id": email_id[:12], "flag_status": flag_status}`|❌ not needed                               |❌ not needed                           |
+
+tools/attachment_tools.py
+
+
+
+|Tool                  |log_tool_call                                                       |governance                                 |validate    |
+|----------------------|--------------------------------------------------------------------|-------------------------------------------|------------|
+|`list_attachments`    |✅ `{"email_id": email_id[:12]}`                                     |❌ not needed                               |❌ not needed|
+|`read_attachment`     |✅ `{"email_id": email_id[:12], "attachment_id": attachment_id[:12]}`|❌ not needed                               |❌ not needed|
+|`summarise_attachment`|✅ `{"email_id": email_id[:12]}`                                     |`get_email_rules()` → append to instruction|❌ not needed|
+
+tools/calendar_tools.py
+
+
+
+|Tool                  |log_tool_call                 |governance  |validate                          |
+|----------------------|------------------------------|------------|----------------------------------|
+|`list_calendar_events`|✅ `{"date_range": date_range}`|❌ not needed|`validate_calendar_events(result)`|
+
+tools/draft_tools.py
+
+
+
+|Tool                   |log_tool_call                             |governance                                 |validate                                             |
+|-----------------------|------------------------------------------|-------------------------------------------|-----------------------------------------------------|
+|`list_draft_emails`    |✅ `{"count": safe_count}`                 |❌ not needed                               |❌ not needed                                         |
+|`compose_email`        |✅ `{"subject": subject}`                  |`get_draft_rules()` → append to instruction|❌ not needed                                         |
+|`compose_reply`        |✅ `{"email_id": email_id[:12]}`           |`get_draft_rules()` → append to instruction|❌ not needed                                         |
+|`save_draft_to_outlook`|✅ `{"subject": subject}`                  |❌ not needed                               |`validate_draft_content(body_text, to_list, subject)`|
+|`find_availability`    |✅ `{"duration_minutes": duration_minutes}`|❌ not needed                               |❌ not needed                                         |
+|`create_draft_invite`  |✅ `{"subject": subject}`                  |`get_draft_rules()` → append to instruction|❌ not needed                                         |
+
+tools/folder_tools.py
+
+
+
+|Tool           |log_tool_call                                                     |governance  |validate    |
+|---------------|------------------------------------------------------------------|------------|------------|
+|`list_folders` |✅ `{}`                                                            |❌ not needed|❌ not needed|
+|`create_folder`|✅ `{"folder_name": folder_name}`                                  |❌ not needed|❌ not needed|
+|`move_email`   |✅ `{"email_id": email_id[:12], "destination": destination_folder}`|❌ not needed|❌ not needed|
+
+tools/task_tools.py
+
+
+
+|Tool           |log_tool_call                                |governance                                |validate                                        |
+|---------------|---------------------------------------------|------------------------------------------|------------------------------------------------|
+|`extract_tasks`|✅ `{"count": safe_count, "keyword": keyword}`|`get_task_rules()` → append to instruction|`validate_task_list(tasks)` if tasks list exists|
+
+tools/mom_tools.py
+
+
+
+|Tool               |log_tool_call                                            |governance                               |validate                                               |
+|-------------------|---------------------------------------------------------|-----------------------------------------|-------------------------------------------------------|
+|`generate_mom`     |✅ `{"email_id": email_id[:12], "use_thread": use_thread}`|`get_mom_rules()` → append to instruction|`validate_mom_output(result["instruction"])`           |
+|`save_mom_as_draft`|✅ `{"subject": subject}`                                 |❌ not needed                             |`validate_draft_content(mom_content, to_list, subject)`|
+
+tools/followup_tools.py
+
+
+
+|Tool                 |log_tool_call                                         |governance                                    |validate    |
+|---------------------|------------------------------------------------------|----------------------------------------------|------------|
+|`track_followups`    |✅ `{"days_threshold": threshold, "count": scan_count}`|❌ not needed                                  |❌ not needed|
+|`check_email_replied`|✅ `{"email_id": email_id[:12]}`                       |❌ not needed                                  |❌ not needed|
+|`compose_followup`   |✅ `{"email_id": email_id[:12]}`                       |`get_followup_rules()` → append to instruction|❌ not needed|
+|`add_task_todo`      |✅ `{"title": title, "due_date": due_date}`            |❌ not needed                                  |❌ not needed|
+|`add_task_planner`   |✅ `{"title": title, "due_date": due_date}`            |❌ not needed                                  |❌ not needed|
+|`list_tasks`         |✅ `{"source": source}`                                |❌ not needed                                  |❌ not needed|
+
+tools/semantic_tools.py
+
+
+
+|Tool                    |log_tool_call                            |governance  |validate    |
+|------------------------|-----------------------------------------|------------|------------|
+|`semantic_search_emails`|✅ `{"query": query, "top_k": safe_top_k}`|❌ not needed|❌ not needed|
+
+tools/chart_tools.py
+
+
+
+|Tool            |log_tool_call                                 |governance  |validate    |
+|----------------|----------------------------------------------|------------|------------|
+|`generate_chart`|✅ `{"chart_type": chart_type, "title": title}`|❌ not needed|❌ not needed|
+
+Exact code pattern for each addition
+Pattern 1 — log_tool_call (add at start of every try block)
+
+from utils.audit_logger import log_tool_call, get_user_email_from_headers
+
+user_email = get_user_email_from_headers()
+log_tool_call(
+    tool_name="list_emails",          # change per tool
+    user_email=user_email,
+    inputs={"count": safe_count},     # safe fields only per table above
+)
+
+
+Pattern 2 — governance rules (append to instruction field)
+
+from utils.governance import get_email_rules   # change per tool category
+
+return {
+    ...
+    "instruction": (
+        "your existing instruction text here...\n\n"
+        f"{get_email_rules()}"         # appended at the end
+    ),
+}
+
+
+Pattern 3 — validate and append (before return)
+
+from utils.validator import validate_email_list, append_validation_to_result
+
+validation = validate_email_list(result["emails"])
+return append_validation_to_result(final_result, validation)
+
+
+Priority order — do these first
+If you want to start with the highest-value tools:
+
+
+
+|Priority|Tool                             |Why                          |
+|--------|---------------------------------|-----------------------------|
+|1       |`generate_mom`                   |Highest hallucination risk   |
+|2       |`extract_tasks`                  |Deadline/owner invention risk|
+|3       |`summarise_email`                |Context mixing risk          |
+|4       |`save_draft_to_outlook`          |Placeholder text risk        |
+|5       |`compose_email` / `compose_reply`|Tone/promise risk            |
+|6       |All others                       |Lower risk, operational tools|
+
+Start with Priority 1–3, test, then roll out to the rest.​​​​​​​​​​​​​​​​
+
+
+
+
+
