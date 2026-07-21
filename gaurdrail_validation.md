@@ -2593,5 +2593,3 @@ try:
 except Exception as exc:
     return format_tool_error(exc, tool_name="flag_email", logger=logger)
 ```
-```
-
