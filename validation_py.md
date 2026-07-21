@@ -2352,3 +2352,1651 @@ echo "done"
 ~~~
 
 ---
+
+
+**Files:** mom_tools.py, followup_tools.py, semantic_tools.py, chart_tools.py
+**Changes:** audit logging, governance rules, output validation added
+**Note:** All imports consolidated at top of each file
+
+---
+
+## 1. `tools/mom_tools.py`
+
+```python
+"""
+mom_tools.py
+============
+MCP tools for generating formal Minutes of Meeting (MOM) from
+email threads or single emails, and saving them as draft emails.
+
+Governance layer:
+    - Every tool call is audit-logged via utils/audit_logger.py
+    - MOM generation instruction includes MOM governance rules
+    - save_mom_as_draft validates content before saving
+    - validate_mom_output checks generated MOM for required sections
+
+Multi-language:
+    - Detects email language automatically via utils/language_utils.py
+    - MOM is generated in the same language as the source emails
+
+Formal MOM format (7 sections):
+    1. Meeting Details
+    2. Attendees
+    3. Discussion Summary
+    4. Decisions Made
+    5. Action Items
+    6. Next Steps
+    7. Notes
+
+Tools:
+    generate_mom, save_mom_as_draft
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from tools.mcp_instance import mcp
+
+from graph.mail_client import fetch_message_by_id
+from graph.thread_client import fetch_email_thread
+from graph.draft_client import create_draft
+
+from utils.error_handler import format_tool_error
+from utils.logger import get_logger
+from utils.audit_logger import log_tool_call, get_user_email_from_headers
+from utils.governance import get_mom_rules
+from utils.language_utils import detect_language, get_language_instruction
+from utils.validator import (
+    validate_mom_output,
+    validate_draft_content,
+    append_validation_to_result,
+)
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tool: generate_mom
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def generate_mom(
+    email_id: str,
+    use_thread: bool = True,
+) -> dict:
+    """
+    Generate a formal Minutes of Meeting (MOM) document from an email
+    or email thread. Detects language automatically and produces the
+    MOM in the same language as the source emails.
+
+    Use this tool when the user asks things like:
+    - "Generate MOM from this email thread"
+    - "Create minutes of meeting from this email chain"
+    - "Prepare a formal MOM from this discussion"
+    - "Extract meeting minutes from this email"
+
+    Args:
+        email_id (str): Graph API ID of any email in the thread.
+                         If use_thread=True, fetches the full chain.
+                         If use_thread=False, uses only this email.
+        use_thread (bool): True to fetch the full conversation thread
+                            (recommended for accurate MOM). Default True.
+
+    Returns:
+        dict with structured email data and MOM generation instruction
+        for LibreChat's LLM to produce the formal document.
+    """
+    logger.info(
+        f"Tool called: generate_mom "
+        f"(email_id={email_id[:20]}..., use_thread={use_thread})"
+    )
+
+    try:
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="generate_mom",
+            user_email=user_email,
+            inputs={
+                "email_id": email_id[:12],
+                "use_thread": use_thread,
+            },
+        )
+
+        # ── Fetch email(s) ───────────────────────────────────────────
+        if use_thread:
+            messages = await fetch_email_thread(email_id)
+            source_label = "Email Thread"
+        else:
+            single = await fetch_message_by_id(email_id)
+            messages = [single]
+            source_label = "Single Email"
+
+        if not messages:
+            return {
+                "error": True,
+                "message": "No email content found to generate MOM from.",
+            }
+
+        # ── Collect all participants ──────────────────────────────────
+        participants = {}
+        for msg in messages:
+            sender_name = (
+                msg.get("sender_name")
+                or msg.get("from", {}).get("emailAddress", {}).get("name", "")
+            )
+            sender_email = (
+                msg.get("sender_email")
+                or msg.get("from", {}).get("emailAddress", {}).get("address", "")
+            )
+            if sender_email and sender_email not in participants:
+                participants[sender_email] = sender_name or sender_email
+
+            for r in msg.get("to_recipients", []):
+                email = r.get("email", "")
+                name = r.get("name", email)
+                if email and email not in participants:
+                    participants[email] = name
+
+            for r in msg.get("cc_recipients", []):
+                email = r.get("email", "")
+                name = r.get("name", email)
+                if email and email not in participants:
+                    participants[email] = name
+
+        # ── Build attendee table ──────────────────────────────────────
+        attendee_rows = "\n".join([
+            f"| {name} | {email} | Participant |"
+            for email, name in participants.items()
+        ])
+
+        # ── Build email digest ────────────────────────────────────────
+        email_digest = ""
+        for i, msg in enumerate(messages, 1):
+            sender = (
+                msg.get("sender_name")
+                or msg.get("from", {}).get("emailAddress", {}).get("name", "Unknown")
+            )
+            date = (
+                msg.get("received_date")
+                or msg.get("receivedDateTime", "")
+            )[:10]
+            subject = msg.get("subject", "")
+            body = (
+                msg.get("body", {}).get("content", "")
+                if isinstance(msg.get("body"), dict)
+                else msg.get("body", "")
+            )[:800]
+
+            email_digest += (
+                f"--- Message {i} ---\n"
+                f"From: {sender}\n"
+                f"Date: {date}\n"
+                f"Subject: {subject}\n"
+                f"Content: {body}\n\n"
+            )
+
+        # ── Detect language ───────────────────────────────────────────
+        sample_text = " ".join([
+            msg.get("subject", "") + " " + (
+                msg.get("body", {}).get("content", "")
+                if isinstance(msg.get("body"), dict)
+                else msg.get("body", "")
+            )[:200]
+            for msg in messages[:3]
+        ])
+        lang_code, lang_name = detect_language(sample_text)
+        lang_instruction = get_language_instruction(lang_code, lang_name)
+
+        # ── Meeting metadata ──────────────────────────────────────────
+        first_msg = messages[0]
+        last_msg = messages[-1]
+        meeting_subject = first_msg.get("subject", "Meeting")
+        meeting_date = (
+            last_msg.get("received_date")
+            or last_msg.get("receivedDateTime", "")
+        )[:10]
+
+        # ── Governance rules ─────────────────────────────────────────
+        governance = get_mom_rules(include_sources=True)
+
+        # ── Build MOM instruction ─────────────────────────────────────
+        mom_instruction = (
+            f"Generate a formal Minutes of Meeting (MOM) document.\n"
+            f"{lang_instruction}\n\n"
+            f"Use EXACTLY this structure:\n\n"
+            f"═══════════════════════════════════════════════════\n"
+            f"         MINUTES OF MEETING (MOM)\n"
+            f"═══════════════════════════════════════════════════\n\n"
+            f"1. MEETING DETAILS\n"
+            f"   Date        : {meeting_date}\n"
+            f"   Subject     : {meeting_subject}\n"
+            f"   Source      : {source_label} ({len(messages)} message(s))\n"
+            f"   Language    : {lang_name}\n\n"
+            f"2. ATTENDEES\n"
+            f"   | Name | Email | Role |\n"
+            f"   |------|-------|------|\n"
+            f"{attendee_rows}\n\n"
+            f"3. DISCUSSION SUMMARY\n"
+            f"   [Write 3-5 paragraphs summarising key discussion points]\n\n"
+            f"4. DECISIONS MADE\n"
+            f"   [List explicit decisions as bullet points]\n\n"
+            f"5. ACTION ITEMS\n"
+            f"   | # | Action | Owner | Deadline | Status |\n"
+            f"   |---|--------|-------|----------|--------|\n"
+            f"   [Extract all action items]\n\n"
+            f"6. NEXT STEPS\n"
+            f"   [Summarise what happens next]\n\n"
+            f"7. NOTES\n"
+            f"   [Any additional context]\n\n"
+            f"═══════════════════════════════════════════════════\n\n"
+            f"{governance}\n\n"
+            f"Email content to base the MOM on:\n\n{email_digest}"
+        )
+
+        result = {
+            "email_count": len(messages),
+            "participants": participants,
+            "meeting_subject": meeting_subject,
+            "meeting_date": meeting_date,
+            "language_detected": lang_name,
+            "source": source_label,
+            "instruction": mom_instruction,
+        }
+
+        # ── Validate MOM instruction before returning ─────────────────
+        validation = validate_mom_output(mom_instruction)
+        return append_validation_to_result(result, validation)
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="generate_mom", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Tool: save_mom_as_draft
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def save_mom_as_draft(
+    to_emails: str,
+    subject: str,
+    mom_content: str,
+) -> dict:
+    """
+    Save a generated MOM as an email draft to send to all attendees.
+    Call this AFTER generate_mom and user approval of the MOM content.
+
+    Use this tool when the user says things like:
+    - "Save this MOM and send it to everyone"
+    - "Draft this MOM to all attendees"
+    - "Email this MOM to the team"
+
+    Args:
+        to_emails (str): Comma-separated email addresses of all
+                          attendees to receive the MOM.
+        subject (str): Email subject e.g. "MOM — Project Kickoff".
+        mom_content (str): The full MOM text as generated and
+                            approved in chat.
+
+    Returns:
+        dict with draft ID and save confirmation.
+    """
+    logger.info(f"Tool called: save_mom_as_draft (to={to_emails})")
+
+    try:
+        to_list = [e.strip() for e in to_emails.split(",") if e.strip()]
+
+        if not to_list:
+            return {
+                "error": True,
+                "message": "No recipient email addresses provided.",
+            }
+
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="save_mom_as_draft",
+            user_email=user_email,
+            inputs={"subject": subject},
+        )
+
+        # ── Validate MOM content before saving ────────────────────────
+        validation = validate_draft_content(
+            body_text=mom_content,
+            to_emails=to_list,
+            subject=subject,
+        )
+        if not validation.is_valid:
+            return append_validation_to_result({}, validation)
+
+        # ── Convert to HTML ───────────────────────────────────────────
+        paragraphs = [p.strip() for p in mom_content.split("\n") if p.strip()]
+        body_html = (
+            '<html><body style="font-family: Calibri, Arial, sans-serif; '
+            'font-size: 13px; color: #333;">'
+            '<div style="white-space: pre-wrap; font-family: monospace;">'
+            + "\n".join(paragraphs)
+            + "</div></body></html>"
+        )
+
+        result = await create_draft(
+            to_emails=to_list,
+            subject=subject,
+            body_html=body_html,
+        )
+
+        final_result = {
+            "draft_id": result["draft_id"],
+            "subject": subject,
+            "to": to_list,
+            "status": "✅ MOM saved as email draft in Outlook Drafts",
+            "instruction": (
+                f"Display this confirmation:\n\n"
+                f"**✅ MOM Draft Saved**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **To** | {', '.join(to_list)} |\n"
+                f"| **Subject** | {subject} |\n"
+                f"| **Status** | Saved to Outlook Drafts |\n\n"
+                f"*Open Outlook to review and send the MOM to attendees.*"
+            ),
+        }
+
+        return append_validation_to_result(final_result, validation)
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="save_mom_as_draft", logger=logger)
+```
+
+---
+
+## 2. `tools/followup_tools.py`
+
+```python
+"""
+followup_tools.py
+=================
+MCP tools for tracking emails that need follow-up, composing
+professional follow-up messages, and creating reminder tasks
+in Microsoft To-Do or Planner.
+
+Governance layer:
+    - Every tool call is audit-logged via utils/audit_logger.py
+    - Follow-up compose instruction includes governance rules
+    - Multi-language: follow-up drafts match original email language
+
+Tools:
+    track_followups, check_email_replied, compose_followup,
+    add_task_todo, add_task_planner, list_tasks
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from datetime import datetime, timedelta, timezone
+
+from tools.mcp_instance import mcp
+
+from graph.mail_client import fetch_recent_messages, fetch_message_by_id
+from graph.thread_client import fetch_email_thread
+from graph.task_client import (
+    create_todo_task,
+    create_planner_task,
+    get_todo_tasks,
+)
+
+from utils.error_handler import format_tool_error
+from utils.logger import get_logger
+from utils.audit_logger import log_tool_call, get_user_email_from_headers
+from utils.governance import get_followup_rules
+from utils.language_utils import detect_language, get_language_instruction
+from config.settings import settings
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helper: _needs_followup
+# ---------------------------------------------------------------------------
+def _needs_followup(msg: dict, user_email: str, threshold_days: int) -> bool:
+    """
+    Determine if an email needs a follow-up based on age and
+    whether the current user has already replied.
+
+    Args:
+        msg (dict): Email dictionary from mail_client.
+        user_email (str): The logged-in user's email address.
+        threshold_days (int): Days after which unreplied email is overdue.
+
+    Returns:
+        bool: True if follow-up is needed.
+    """
+    if msg.get("is_draft"):
+        return False
+
+    sender_email = (
+        msg.get("from", {}).get("emailAddress", {}).get("address", "").lower()
+    )
+    if sender_email == user_email.lower():
+        return False
+
+    received_raw = msg.get("receivedDateTime", "")
+    if not received_raw:
+        return False
+
+    try:
+        received_dt = datetime.fromisoformat(
+            received_raw.replace("Z", "+00:00")
+        )
+        age_days = (datetime.now(timezone.utc) - received_dt).days
+        return age_days >= threshold_days
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Tool: track_followups
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def track_followups(
+    days_threshold: int = None,
+    count: int = None,
+) -> dict:
+    """
+    Scan the inbox and identify emails that have not been replied to
+    and are older than the configured threshold days.
+
+    Use this tool when the user asks things like:
+    - "Which emails need a follow-up?"
+    - "What emails have I not replied to?"
+    - "Show me overdue emails"
+    - "Find emails waiting for my response"
+
+    Args:
+        days_threshold (int): Emails older than this many days without
+                               a reply are flagged. Default from .env
+                               (FOLLOWUP_DAYS_THRESHOLD = 3 days).
+        count (int): Number of inbox emails to scan. Default from
+                      .env (FOLLOWUP_SCAN_COUNT = 20).
+
+    Returns:
+        dict with list of emails needing follow-up and a display table.
+    """
+    logger.info("Tool called: track_followups")
+
+    try:
+        threshold = days_threshold or settings.FOLLOWUP_DAYS_THRESHOLD
+        scan_count = count or settings.FOLLOWUP_SCAN_COUNT
+
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="track_followups",
+            user_email=user_email,
+            inputs={
+                "days_threshold": threshold,
+                "count": scan_count,
+            },
+        )
+
+        # ── Get current user profile ──────────────────────────────────
+        from graph.graph_client_factory import get_user_profile
+        profile = await get_user_profile()
+        current_user_email = (
+            profile.get("mail") or profile.get("userPrincipalName") or ""
+        )
+
+        # ── Fetch recent inbox emails ─────────────────────────────────
+        raw_messages = await fetch_recent_messages(top=scan_count)
+
+        if not raw_messages:
+            return {
+                "followup_count": 0,
+                "display_table": "📭 Inbox is empty — no emails to track.",
+                "instruction": "Inform the user their inbox is empty.",
+            }
+
+        # ── Filter emails needing follow-up ───────────────────────────
+        needs_reply = [
+            m for m in raw_messages
+            if _needs_followup(m, current_user_email, threshold)
+        ]
+
+        if not needs_reply:
+            return {
+                "followup_count": 0,
+                "emails_scanned": len(raw_messages),
+                "display_table": (
+                    f"✅ No follow-ups needed.\n\n"
+                    f"Scanned {len(raw_messages)} emails. "
+                    f"All emails received in the last {threshold} days "
+                    f"have been replied to or are from you."
+                ),
+                "instruction": "Inform the user no follow-ups are needed.",
+            }
+
+        # ── Build display table ───────────────────────────────────────
+        table_lines = [
+            f"**🔔 Follow-up Required — {len(needs_reply)} email(s)**\n",
+            f"*Emails older than {threshold} days with no reply sent*\n",
+            "| # | Date | From | Subject | Days Old |",
+            "|---|------|------|---------|----------|",
+        ]
+
+        followup_list = []
+        for i, msg in enumerate(needs_reply, 1):
+            received_raw = msg.get("receivedDateTime", "")
+            try:
+                received_dt = datetime.fromisoformat(
+                    received_raw.replace("Z", "+00:00")
+                )
+                age_days = (datetime.now(timezone.utc) - received_dt).days
+                date_display = received_dt.strftime("%d %b %Y")
+            except Exception:
+                age_days = "?"
+                date_display = received_raw[:10]
+
+            sender = (
+                msg.get("from", {}).get("emailAddress", {}).get("name") or "—"
+            )
+            subject = (msg.get("subject") or "(no subject)")[:50]
+            urgency = (
+                "🔴" if isinstance(age_days, int) and age_days >= 7 else "🟡"
+            )
+
+            table_lines.append(
+                f"| {i} | {date_display} | {sender} "
+                f"| {subject} | {urgency} {age_days} days |"
+            )
+
+            followup_list.append({
+                "id": msg.get("id"),
+                "subject": msg.get("subject"),
+                "sender": sender,
+                "sender_email": (
+                    msg.get("from", {}).get("emailAddress", {}).get("address") or ""
+                ),
+                "received_date": received_raw,
+                "age_days": age_days,
+            })
+
+        return {
+            "followup_count": len(needs_reply),
+            "emails_scanned": len(raw_messages),
+            "threshold_days": threshold,
+            "followups": followup_list,
+            "display_table": "\n".join(table_lines),
+            "instruction": (
+                "Display 'display_table' as markdown. "
+                "🔴 = 7+ days overdue, 🟡 = 3–6 days. "
+                "Offer to: compose a follow-up, add to tasks, or both."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="track_followups", logger=logger)
+
+# ---------------------------------------------------------------------------
+# Tool: check_email_replied
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def check_email_replied(email_id: str) -> dict:
+    """
+    Check whether a specific email has been replied to.
+
+    Use this tool when the user asks things like:
+    - "Did I reply to John's email?"
+    - "Have I responded to this message?"
+    - "Check if I replied to this email"
+
+    Args:
+        email_id (str): Graph API ID of the email to check.
+
+    Returns:
+        dict with replied status and thread context.
+    """
+    logger.info(
+        f"Tool called: check_email_replied (email_id={email_id[:20]}...)"
+    )
+
+    try:
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="check_email_replied",
+            user_email=user_email,
+            inputs={"email_id": email_id[:12]},
+        )
+
+        # ── Get current user ──────────────────────────────────────────
+        from graph.graph_client_factory import get_user_profile
+        profile = await get_user_profile()
+        current_user_email = (
+            profile.get("mail") or profile.get("userPrincipalName") or ""
+        ).lower()
+
+        # ── Fetch thread ──────────────────────────────────────────────
+        thread = await fetch_email_thread(email_id)
+
+        target_msg = next(
+            (m for m in thread if m.get("id") == email_id), thread[0]
+        )
+
+        user_replies = [
+            m for m in thread
+            if m.get("sender_email", "").lower() == current_user_email
+            and m.get("id") != email_id
+        ]
+
+        has_replied = len(user_replies) > 0
+        original_subject = target_msg.get("subject", "")
+        original_sender = target_msg.get("sender_name", "")
+
+        if has_replied:
+            latest_reply = user_replies[-1]
+            reply_date = latest_reply.get("received_date", "")[:10]
+            status_display = f"✅ Yes — you replied on {reply_date}"
+        else:
+            received_raw = target_msg.get("received_date", "")
+            try:
+                received_dt = datetime.fromisoformat(
+                    received_raw.replace("Z", "+00:00")
+                )
+                age_days = (datetime.now(timezone.utc) - received_dt).days
+            except Exception:
+                age_days = "unknown"
+            status_display = (
+                f"❌ No reply sent yet — email is {age_days} days old"
+            )
+
+        return {
+            "has_replied": has_replied,
+            "original_subject": original_subject,
+            "original_sender": original_sender,
+            "reply_count": len(user_replies),
+            "status_display": status_display,
+            "instruction": (
+                f"Display this to the user:\n\n"
+                f"**📧 Reply Status**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **Email** | {original_subject} |\n"
+                f"| **From** | {original_sender} |\n"
+                f"| **Replied** | {status_display} |\n\n"
+                + (
+                    "Offer to compose a follow-up reply."
+                    if not has_replied else
+                    f"You have sent {len(user_replies)} reply(ies) in this thread."
+                )
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(
+            exc, tool_name="check_email_replied", logger=logger
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool: compose_followup
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def compose_followup(
+    email_id: str,
+    followup_context: str = "",
+) -> dict:
+    """
+    Compose a professional follow-up email for an unreplied message
+    and display it in chat for review. Detects original email language
+    automatically and matches it in the follow-up.
+
+    Use this tool when the user asks things like:
+    - "Compose a follow-up for John's email"
+    - "Write a polite follow-up to this unanswered email"
+    - "Draft a chaser for this overdue email"
+
+    Args:
+        email_id (str): Graph API ID of the email to follow up on.
+        followup_context (str): Optional extra context e.g.
+                                  "mention the deadline is this Friday".
+
+    Returns:
+        dict with follow-up composition instruction for LibreChat's LLM.
+    """
+    logger.info(
+        f"Tool called: compose_followup (email_id={email_id[:20]}...)"
+    )
+
+    try:
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="compose_followup",
+            user_email=user_email,
+            inputs={"email_id": email_id[:12]},
+        )
+
+        # ── Read original email ───────────────────────────────────────
+        original = await fetch_message_by_id(email_id)
+        original_subject = original.get("subject", "")
+        original_sender_name = (
+            original.get("from", {}).get("emailAddress", {}).get("name", "")
+        )
+        original_sender_email = (
+            original.get("from", {}).get("emailAddress", {}).get("address", "")
+        )
+        original_preview = original.get("body", {}).get("content", "")[:400]
+        received_raw = original.get("receivedDateTime", "")
+
+        # ── Calculate age ─────────────────────────────────────────────
+        try:
+            received_dt = datetime.fromisoformat(
+                received_raw.replace("Z", "+00:00")
+            )
+            age_days = (datetime.now(timezone.utc) - received_dt).days
+            original_date = received_dt.strftime("%d %B %Y")
+        except Exception:
+            age_days = "several"
+            original_date = received_raw[:10]
+
+        # ── Detect language ───────────────────────────────────────────
+        lang_code, lang_name = detect_language(original_preview)
+        lang_instruction = get_language_instruction(lang_code, lang_name)
+
+        # ── Governance rules ─────────────────────────────────────────
+        governance = get_followup_rules()
+
+        extra = (
+            f"\nAdditional context: {followup_context}"
+            if followup_context else ""
+        )
+
+        return {
+            "original_subject": original_subject,
+            "original_sender": original_sender_name,
+            "original_sender_email": original_sender_email,
+            "age_days": age_days,
+            "language_detected": lang_name,
+            "instruction": (
+                f"Compose and display a professional follow-up email.\n"
+                f"{lang_instruction}\n\n"
+                f"Display this header first:\n\n"
+                f"**📧 Follow-up Draft**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **To** | {original_sender_name} <{original_sender_email}> |\n"
+                f"| **Re** | {original_subject} |\n"
+                f"| **Original date** | {original_date} ({age_days} days ago) |\n\n"
+                f"---\n\n"
+                f"Then compose the follow-up body:\n"
+                f"- Start: Dear {original_sender_name},\n"
+                f"- Politely reference the original email sent {age_days} days ago\n"
+                f"- Gently ask for an update or response\n"
+                f"- Keep it to 2-3 sentences maximum\n"
+                f"- Never aggressive or demanding\n"
+                f"- End: Best regards,{extra}\n\n"
+                f"{governance}\n\n"
+                f"Original email context:\n{original_preview}\n\n"
+                f"After composing ask:\n"
+                f"'Would you like me to save this follow-up to Outlook Drafts?'\n"
+                f"If yes, call save_draft_to_outlook with:\n"
+                f"- to_emails: '{original_sender_email}'\n"
+                f"- subject: 'Re: {original_subject}'\n"
+                f"- body_text: the exact composed follow-up"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(
+            exc, tool_name="compose_followup", logger=logger
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool: add_task_todo
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def add_task_todo(
+    title: str,
+    due_date: str = "",
+    notes: str = "",
+    list_name: str = "Tasks",
+) -> dict:
+    """
+    Add a personal reminder or task to Microsoft To-Do.
+
+    Use this tool when the user asks things like:
+    - "Add a reminder to follow up on John's email"
+    - "Create a To-Do task for the project report"
+    - "Remind me to reply to this email by Friday"
+    - "Add this action item to my task list"
+
+    Args:
+        title (str): Task title — what needs to be done.
+        due_date (str): When the task is due e.g. "Friday",
+                         "2026-07-20", "end of week".
+        notes (str): Optional additional context or notes.
+        list_name (str): Which To-Do list to add to. Default "Tasks".
+
+    Returns:
+        dict with task ID and confirmation.
+    """
+    logger.info(f"Tool called: add_task_todo (title='{title}')")
+
+    try:
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="add_task_todo",
+            user_email=user_email,
+            inputs={"due_date": due_date},
+        )
+
+        result = await create_todo_task(
+            title=title,
+            due_date=due_date,
+            notes=notes,
+            list_name=list_name,
+        )
+
+        return {
+            **result,
+            "instruction": (
+                f"Display this confirmation:\n\n"
+                f"**✅ Task Added to Microsoft To-Do**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **Task** | {title} |\n"
+                f"| **List** | {result.get('list_name', list_name)} |\n"
+                f"| **Due** | {due_date or 'Not set'} |\n"
+                + (f"| **Notes** | {notes[:80]} |\n" if notes else "")
+                + f"\n*Visible in Microsoft To-Do app and Outlook Tasks.*"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="add_task_todo", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Tool: add_task_planner
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def add_task_planner(
+    title: str,
+    due_date: str = "",
+    notes: str = "",
+    assigned_to_email: str = "",
+) -> dict:
+    """
+    Add a team task to Microsoft Planner.
+
+    Use this tool when the user asks things like:
+    - "Add this to Planner and assign to Jane"
+    - "Create a team task for the infrastructure review"
+    - "Add this action item to the team board"
+    - "Create a Planner card for this follow-up"
+
+    Args:
+        title (str): Task title.
+        due_date (str): Due date in any format.
+        notes (str): Task description or context.
+        assigned_to_email (str): Email of the team member to assign to.
+
+    Returns:
+        dict with task ID and confirmation.
+    """
+    logger.info(f"Tool called: add_task_planner (title='{title}')")
+
+    try:
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="add_task_planner",
+            user_email=user_email,
+            inputs={"due_date": due_date},
+        )
+
+        result = await create_planner_task(
+            title=title,
+            due_date=due_date,
+            notes=notes,
+            assigned_to_email=assigned_to_email,
+        )
+
+        if result.get("error"):
+            return result
+
+        return {
+            **result,
+            "instruction": (
+                f"Display this confirmation:\n\n"
+                f"**✅ Task Added to Microsoft Planner**\n\n"
+                f"| Field | Details |\n"
+                f"|---|---|\n"
+                f"| **Task** | {title} |\n"
+                f"| **Assigned to** | {assigned_to_email or 'Unassigned'} |\n"
+                f"| **Due** | {due_date or 'Not set'} |\n"
+                + (f"| **Notes** | {notes[:80]} |\n" if notes else "")
+                + f"\n*Visible in Microsoft Planner and Teams.*"
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(
+            exc, tool_name="add_task_planner", logger=logger
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool: list_tasks
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def list_tasks(
+    source: str = "todo",
+    list_name: str = "Tasks",
+    count: int = 20,
+) -> dict:
+    """
+    List pending tasks from Microsoft To-Do or Planner.
+
+    Use this tool when the user asks things like:
+    - "Show my To-Do tasks"
+    - "What tasks do I have?"
+    - "List my Planner tasks"
+    - "What's on my task list?"
+
+    Args:
+        source (str): "todo" for Microsoft To-Do,
+                       "planner" for Microsoft Planner.
+                       Default "todo".
+        list_name (str): To-Do list name. Default "Tasks".
+                          Only used when source="todo".
+        count (int): Maximum tasks to return. Default 20.
+
+    Returns:
+        dict with task list and display table.
+    """
+    logger.info(f"Tool called: list_tasks (source={source})")
+
+    try:
+        source_lower = source.strip().lower()
+
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="list_tasks",
+            user_email=user_email,
+            inputs={"source": source_lower},
+        )
+
+        if source_lower == "todo":
+            tasks = await get_todo_tasks(list_name=list_name, top=count)
+            source_label = "Microsoft To-Do"
+        else:
+            return {
+                "error": True,
+                "message": (
+                    "Planner task listing requires additional setup. "
+                    "Please use source='todo' to list Microsoft To-Do tasks."
+                ),
+            }
+
+        if not tasks:
+            return {
+                "tasks": [],
+                "count": 0,
+                "source": source_label,
+                "display_table": f"✅ No pending tasks in {source_label}.",
+                "instruction": (
+                    f"Inform the user their {source_label} task list is empty."
+                ),
+            }
+
+        table_lines = [
+            f"**📋 {source_label} — Pending Tasks**\n",
+            "| # | Task | Due Date | Status |",
+            "|---|------|----------|--------|",
+        ]
+
+        for i, task in enumerate(tasks, 1):
+            due = task.get("due_date", "Not set")
+            status = task.get("status", "notStarted")
+            status_icon = "🔵" if status == "notStarted" else "🟡"
+            title = (task.get("title") or "")[:60]
+            table_lines.append(
+                f"| {i} | {title} | {due} | {status_icon} {status} |"
+            )
+
+        return {
+            "tasks": tasks,
+            "count": len(tasks),
+            "source": source_label,
+            "display_table": "\n".join(table_lines),
+            "instruction": (
+                "Display 'display_table' as markdown. "
+                "Offer to add new tasks or mark existing ones complete."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="list_tasks", logger=logger)
+```
+
+---
+
+## 3. `tools/semantic_tools.py`
+
+```python
+"""
+semantic_tools.py
+=================
+MCP tool for semantic search over email history.
+
+Governance layer:
+    - Every tool call is audit-logged via utils/audit_logger.py
+
+How it works:
+    Fetches recent emails, converts each to a vector embedding using
+    sentence-transformers, computes cosine similarity against the query,
+    and returns ranked results — without needing exact keyword matches.
+
+Tools:
+    semantic_search_emails
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from tools.mcp_instance import mcp
+
+from graph.mail_client import fetch_recent_messages
+from semantic.search_engine import semantic_search
+
+from utils.error_handler import format_tool_error
+from utils.logger import get_logger
+from utils.audit_logger import log_tool_call, get_user_email_from_headers
+from config.settings import settings
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tool: semantic_search_emails
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def semantic_search_emails(
+    query: str,
+    top_k: int = 10,
+    corpus_size: int = None,
+) -> dict:
+    """
+    Search your email history using natural language and semantic
+    understanding — finds relevant emails even when exact keywords
+    don't match.
+
+    Use this tool when the user asks things like:
+    - "Find emails about project delays even if delay isn't mentioned"
+    - "Search for anything related to budget pressure"
+    - "Which emails were about scheduling conflicts?"
+    - "Find discussions about the client being unhappy"
+
+    Use semantic_search_emails instead of search_emails when:
+    - The user describes a concept or topic, not an exact phrase
+    - Keyword search returned no results but the email should exist
+    - The user wants to search by meaning or sentiment
+
+    Args:
+        query (str): Natural language description of what to find.
+                      e.g. "deadline pressure from management",
+                           "budget approval requests"
+        top_k (int): Number of top matching emails to return. Default 10.
+        corpus_size (int): How many recent emails to search over.
+                            Default from settings (100). Max 200.
+
+    Returns:
+        dict with semantically ranked email results and display table.
+    """
+    logger.info(
+        f"Tool called: semantic_search_emails (query='{query}', top_k={top_k})"
+    )
+
+    try:
+        if not query or not query.strip():
+            return {
+                "error": True,
+                "message": "Please provide a search query.",
+            }
+
+        safe_top_k = min(max(top_k, 1), 25)
+        max_corpus = min(
+            corpus_size or settings.SEMANTIC_SEARCH_MAX_EMAILS,
+            200,
+        )
+
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="semantic_search_emails",
+            user_email=user_email,
+            inputs={"top_k": safe_top_k},
+        )
+
+        # ── Fetch email corpus ────────────────────────────────────────
+        logger.info(f"Fetching {max_corpus} emails for semantic corpus...")
+        raw_emails = await fetch_recent_messages(top=max_corpus)
+
+        if not raw_emails:
+            return {
+                "results": [],
+                "query": query,
+                "display_table": "📭 No emails found to search over.",
+                "instruction": "Inform the user their inbox appears empty.",
+            }
+
+        # ── Run semantic search ───────────────────────────────────────
+        logger.info(f"Running semantic search over {len(raw_emails)} emails...")
+        results = semantic_search(
+            query=query,
+            emails=raw_emails,
+            top_k=safe_top_k,
+        )
+
+        if not results:
+            return {
+                "results": [],
+                "query": query,
+                "result_count": 0,
+                "emails_searched": len(raw_emails),
+                "display_table": (
+                    f"🔍 No semantically relevant emails found for: *'{query}'*\n\n"
+                    f"Searched {len(raw_emails)} recent emails. "
+                    f"Try rephrasing your query or use search_emails for "
+                    f"keyword search."
+                ),
+                "instruction": (
+                    "Display the message above and suggest the user "
+                    "try keyword search or rephrase their query."
+                ),
+            }
+
+        # ── Build display table ───────────────────────────────────────
+        table_lines = [
+            f"**🔍 Semantic Search Results**",
+            f"*Query: \"{query}\"* — {len(results)} result(s) from "
+            f"{len(raw_emails)} emails searched\n",
+            "| # | Relevance | Date | From | Subject |",
+            "|---|-----------|------|------|---------|",
+        ]
+
+        cleaned_results = []
+        for i, email in enumerate(results, 1):
+            received_raw = email.get("receivedDateTime", "")
+            try:
+                from dateutil import parser as dp
+                dt = dp.parse(received_raw)
+                date_display = dt.strftime("%d %b %Y")
+            except Exception:
+                date_display = received_raw[:10] if received_raw else "—"
+
+            sender = (
+                email.get("from", {})
+                .get("emailAddress", {})
+                .get("name") or "—"
+            )
+            subject = (email.get("subject") or "(no subject)")[:55]
+            relevance = email.get("relevance", "—")
+            score = email.get("similarity_score", 0)
+
+            table_lines.append(
+                f"| {i} | {relevance} ({score:.2f}) | {date_display} "
+                f"| {sender} | {subject} |"
+            )
+
+            cleaned_results.append({
+                "id": email.get("id"),
+                "subject": email.get("subject"),
+                "sender": sender,
+                "sender_email": (
+                    email.get("from", {})
+                    .get("emailAddress", {})
+                    .get("address") or ""
+                ),
+                "received_date": received_raw,
+                "date_display": date_display,
+                "has_attachments": email.get("hasAttachments", False),
+                "preview": email.get("bodyPreview") or email.get("preview") or "",
+                "similarity_score": score,
+                "relevance": relevance,
+            })
+
+        return {
+            "results": cleaned_results,
+            "query": query,
+            "result_count": len(results),
+            "emails_searched": len(raw_emails),
+            "display_table": "\n".join(table_lines),
+            "instruction": (
+                "Display 'display_table' as markdown. "
+                "Explain that results are ranked by semantic relevance — "
+                "higher scores mean more conceptually similar to the query. "
+                "Offer to open or summarise any specific result."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(
+            exc, tool_name="semantic_search_emails", logger=logger
+        )
+```
+
+---
+
+## 4. `tools/chart_tools.py`
+
+```python
+"""
+chart_tools.py
+==============
+MCP tool for generating charts and visualisations from email data,
+task lists, calendar events, or any structured data.
+
+Governance layer:
+    - Every tool call is audit-logged via utils/audit_logger.py
+
+Output format:
+    SVG — renders natively in LibreChat's markdown chat interface.
+    Files also saved to temp_attachments/charts/ as backup.
+
+Supported chart types:
+    bar  — compare values across categories
+    line — show trends over time
+    pie  — show proportions/distribution
+
+Tools:
+    generate_chart
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+import os
+import uuid
+from pathlib import Path
+from datetime import datetime
+
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend — required for Linux server
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
+from tools.mcp_instance import mcp
+from config.settings import settings
+from utils.error_handler import format_tool_error
+from utils.logger import get_logger
+from utils.audit_logger import log_tool_call, get_user_email_from_headers
+
+logger = get_logger(__name__)
+
+# Professional colour palette — blue-aligned
+CHART_COLOURS = [
+    "#0078D4",  # Microsoft Blue
+    "#50E6FF",  # Azure Cyan
+    "#FFB900",  # Amber
+    "#E74856",  # Red
+    "#00CC6A",  # Green
+    "#8764B8",  # Purple
+    "#FF8C00",  # Orange
+    "#004E8C",  # Dark Blue
+    "#038387",  # Teal
+    "#C239B3",  # Magenta
+]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _ensure_chart_dir() -> Path:
+    """Create chart output directory if it doesn't exist."""
+    chart_dir = Path(settings.CHARTS_OUTPUT_DIR).resolve()
+    chart_dir.mkdir(parents=True, exist_ok=True)
+    return chart_dir
+
+
+def _make_filename(chart_type: str) -> str:
+    """Generate a unique timestamped SVG filename."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    short_id = str(uuid.uuid4())[:4]
+    return f"{chart_type}_chart_{timestamp}_{short_id}.svg"
+
+
+def _save_as_svg(fig: plt.Figure, filename: str) -> tuple[str, str]:
+    """
+    Save a matplotlib figure as SVG and read it as a string.
+    SVG renders natively in LibreChat's markdown.
+
+    Args:
+        fig (plt.Figure): The matplotlib figure to save.
+        filename (str): Output filename.
+
+    Returns:
+        tuple[str, str]: (file_path, svg_string)
+    """
+    chart_dir = _ensure_chart_dir()
+    file_path = chart_dir / filename
+
+    fig.savefig(
+        file_path,
+        format="svg",
+        bbox_inches="tight",
+        facecolor="white",
+    )
+    plt.close(fig)
+
+    svg_string = file_path.read_text(encoding="utf-8")
+    logger.info(f"SVG chart saved: {file_path}")
+    return str(file_path), svg_string
+
+
+# ---------------------------------------------------------------------------
+# Tool: generate_chart
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def generate_chart(
+    chart_type: str,
+    labels: str,
+    values: str,
+    title: str = "",
+    x_label: str = "",
+    y_label: str = "",
+) -> dict:
+    """
+    Generate a chart (bar, line, or pie) from provided data and render
+    it as an SVG image directly in the LibreChat chat interface.
+
+    Use this tool when the user asks things like:
+    - "Show me a bar chart of emails by sender"
+    - "Generate a pie chart of my task status"
+    - "Plot a line chart of emails received per day this week"
+    - "Visualise my calendar events by day as a bar chart"
+    - "Create a chart from this data"
+
+    Call AFTER another tool provides data (e.g. list_emails, list_tasks).
+    The LLM aggregates the data from those results and passes it here.
+
+    Args:
+        chart_type (str): "bar", "line", or "pie".
+        labels (str): Comma-separated category labels.
+                       e.g. "John Smith, Jane Doe, HR Team"
+        values (str): Comma-separated numeric values matching labels.
+                       e.g. "15, 8, 3"
+        title (str): Chart title.
+        x_label (str): X-axis label (bar and line charts only).
+        y_label (str): Y-axis label (bar and line charts only).
+
+    Returns:
+        dict with SVG content and instruction to render it in chat.
+    """
+    logger.info(
+        f"Tool called: generate_chart (type={chart_type}, title='{title}')"
+    )
+
+    try:
+        chart_type_clean = chart_type.strip().lower()
+
+        if chart_type_clean not in ("bar", "line", "pie"):
+            return {
+                "error": True,
+                "message": (
+                    f"Unsupported chart type: '{chart_type}'. "
+                    f"Please use 'bar', 'line', or 'pie'."
+                ),
+            }
+
+        # ── Parse and validate inputs ─────────────────────────────────
+        label_list = [l.strip() for l in labels.split(",") if l.strip()]
+        value_list_raw = [v.strip() for v in values.split(",") if v.strip()]
+
+        if not label_list or not value_list_raw:
+            return {
+                "error": True,
+                "message": "Labels and values cannot be empty.",
+            }
+
+        if len(label_list) != len(value_list_raw):
+            return {
+                "error": True,
+                "message": (
+                    f"Mismatch: {len(label_list)} labels but "
+                    f"{len(value_list_raw)} values. They must match."
+                ),
+            }
+
+        try:
+            value_list = [float(v) for v in value_list_raw]
+        except ValueError as ve:
+            return {
+                "error": True,
+                "message": (
+                    f"Values must be numbers. Got: {value_list_raw}. "
+                    f"Error: {ve}"
+                ),
+            }
+
+        max_items = settings.CHARTS_MAX_ITEMS
+        if len(label_list) > max_items:
+            label_list = label_list[:max_items]
+            value_list = value_list[:max_items]
+
+        # ── Audit log ────────────────────────────────────────────────
+        user_email = get_user_email_from_headers()
+        log_tool_call(
+            tool_name="generate_chart",
+            user_email=user_email,
+            inputs={"chart_type": chart_type_clean},
+        )
+
+        # ── Apply consistent chart styling ───────────────────────────
+        plt.rcParams.update({
+            "font.family": "DejaVu Sans",
+            "font.size": 11,
+            "axes.titlesize": 14,
+            "axes.titleweight": "bold",
+            "axes.titlepad": 16,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "figure.facecolor": "white",
+            "axes.facecolor": "#f8f9fa",
+            "axes.grid": True,
+            "grid.alpha": 0.4,
+            "grid.linestyle": "--",
+        })
+
+        # ── Generate chart ────────────────────────────────────────────
+        if chart_type_clean == "bar":
+            file_path, svg_content = _generate_bar_chart(
+                label_list, value_list, title, x_label, y_label
+            )
+        elif chart_type_clean == "line":
+            file_path, svg_content = _generate_line_chart(
+                label_list, value_list, title, x_label, y_label
+            )
+        elif chart_type_clean == "pie":
+            file_path, svg_content = _generate_pie_chart(
+                label_list, value_list, title
+            )
+
+        file_name = Path(file_path).name
+
+        return {
+            "chart_type": chart_type_clean,
+            "title": title,
+            "file_name": file_name,
+            "file_path": file_path,
+            "data_points": len(label_list),
+            "instruction": (
+                f"Display this SVG chart directly in the chat — "
+                f"render it as raw SVG markup, do not wrap it in a code block:\n\n"
+                f"**📊 {title}**\n\n"
+                f"{svg_content}\n\n"
+                f"Then in 1-2 sentences summarise the key insight from this data."
+            ),
+        }
+
+    except Exception as exc:
+        return format_tool_error(exc, tool_name="generate_chart", logger=logger)
+
+
+# ---------------------------------------------------------------------------
+# Internal: Bar chart
+# ---------------------------------------------------------------------------
+def _generate_bar_chart(
+    labels: list,
+    values: list,
+    title: str,
+    x_label: str,
+    y_label: str,
+) -> tuple[str, str]:
+    """Generate a professional vertical bar chart and return as SVG."""
+    fig_width = max(8, len(labels) * 0.9)
+    fig, ax = plt.subplots(figsize=(fig_width, 5))
+
+    colours = [CHART_COLOURS[i % len(CHART_COLOURS)] for i in range(len(labels))]
+    bars = ax.bar(labels, values, color=colours, edgecolor="white",
+                  linewidth=1.5, width=0.6)
+
+    for bar, value in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + max(values) * 0.01,
+            f"{value:,.0f}" if value == int(value) else f"{value:,.1f}",
+            ha="center", va="bottom", fontsize=10,
+            fontweight="bold", color="#333333",
+        )
+
+    ax.set_title(title or "Bar Chart", pad=16)
+    if x_label:
+        ax.set_xlabel(x_label, labelpad=8)
+    if y_label:
+        ax.set_ylabel(y_label, labelpad=8)
+    if len(labels) > 6:
+        plt.xticks(rotation=30, ha="right")
+    ax.set_ylim(0, max(values) * 1.15)
+    plt.tight_layout()
+
+    return _save_as_svg(fig, _make_filename("bar"))
+
+
+# ---------------------------------------------------------------------------
+# Internal: Line chart
+# ---------------------------------------------------------------------------
+def _generate_line_chart(
+    labels: list,
+    values: list,
+    title: str,
+    x_label: str,
+    y_label: str,
+) -> tuple[str, str]:
+    """Generate a professional line/trend chart and return as SVG."""
+    fig, ax = plt.subplots(figsize=(10, 5))
+    x_positions = range(len(labels))
+
+    ax.plot(
+        x_positions, values,
+        color=CHART_COLOURS[0], linewidth=2.5,
+        marker="o", markersize=7,
+        markerfacecolor="white",
+        markeredgecolor=CHART_COLOURS[0],
+        markeredgewidth=2.5, zorder=3,
+    )
+    ax.fill_between(x_positions, values, alpha=0.12, color=CHART_COLOURS[0])
+
+    for i, (x, y) in enumerate(zip(x_positions, values)):
+        ax.annotate(
+            f"{y:,.0f}" if y == int(y) else f"{y:,.1f}",
+            (x, y), textcoords="offset points", xytext=(0, 10),
+            ha="center", fontsize=9, color="#333333",
+        )
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(
+        labels,
+        rotation=30 if len(labels) > 6 else 0,
+        ha="right",
+    )
+    ax.set_title(title or "Line Chart", pad=16)
+    if x_label:
+        ax.set_xlabel(x_label, labelpad=8)
+    if y_label:
+        ax.set_ylabel(y_label, labelpad=8)
+    ax.set_ylim(0, max(values) * 1.2)
+    plt.tight_layout()
+
+    return _save_as_svg(fig, _make_filename("line"))
+
+
+# ---------------------------------------------------------------------------
+# Internal: Pie chart
+# ---------------------------------------------------------------------------
+def _generate_pie_chart(
+    labels: list,
+    values: list,
+    title: str,
+) -> tuple[str, str]:
+    """Generate a professional pie chart and return as SVG."""
+    fig, ax = plt.subplots(figsize=(9, 7))
+    colours = [CHART_COLOURS[i % len(CHART_COLOURS)] for i in range(len(labels))]
+
+    max_idx = values.index(max(values))
+    explode = [0.05 if i == max_idx else 0 for i in range(len(values))]
+
+    wedges, texts, autotexts = ax.pie(
+        values, labels=None, autopct="%1.1f%%",
+        colors=colours, explode=explode, startangle=90,
+        pctdistance=0.75,
+        wedgeprops={"linewidth": 2, "edgecolor": "white"},
+    )
+
+    for autotext in autotexts:
+        autotext.set_fontsize(10)
+        autotext.set_fontweight("bold")
+        autotext.set_color("white")
+
+    total = sum(values)
+    legend_labels = [
+        f"{label}  ({val:,.0f} — {val/total*100:.1f}%)"
+        for label, val in zip(labels, values)
+    ]
+    legend_patches = [
+        mpatches.Patch(color=colours[i], label=legend_labels[i])
+        for i in range(len(labels))
+    ]
+    ax.legend(
+        handles=legend_patches,
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.15),
+        ncol=min(3, len(labels)),
+        frameon=False,
+        fontsize=9,
+    )
+
+    ax.set_title(title or "Pie Chart", pad=20)
+    plt.tight_layout()
+
+    return _save_as_svg(fig, _make_filename("pie"))
+```
+
+---
+
+## Summary
+
+| File | Audit log | Governance | Validation |
+|---|---|---|---|
+| `mom_tools.py` | ✅ both tools | `get_mom_rules()` in `generate_mom` | `validate_mom_output` + `validate_draft_content` |
+| `followup_tools.py` | ✅ all 6 tools | `get_followup_rules()` in `compose_followup` | ❌ |
+| `semantic_tools.py` | ✅ | ❌ | ❌ |
+| `chart_tools.py` | ✅ | ❌ | ❌ |
+
+---
+
+*Copy each code block to its respective file. Restart server after all 4 are updated.*
+ENDOFFILE
+echo "done"
