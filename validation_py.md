@@ -4000,3 +4000,136 @@ def _generate_pie_chart(
 *Copy each code block to its respective file. Restart server after all 4 are updated.*
 ENDOFFILE
 echo "done"
+
+
+---
+
+Let me search for current best practices before explaining.​​​​​​​​​​​​​​​​
+
+Good. I have a clear and current picture. Let me now explain everything clearly before we write a single line of code.
+
+What guardrails, governance, and HITL mean in YOUR project
+First — where are we now vs where we need to be
+
+CURRENT STATE                    TARGET STATE
+─────────────────                ────────────────────────────────
+Tools run freely       →         Tools run within policy boundaries
+LLM can say anything   →         LLM output is validated before display
+No record of actions   →         Every action audited (already building this)
+User approves manually →         Approval is a formal, logged gate
+Errors leak details    →         Errors are sanitised and safe
+
+
+The 9 areas — explained in YOUR context
+
+1. Input Validation
+What it means for your project:
+When LibreChat sends a tool call like list_emails(count=999999) or read_email(email_id="../../etc/passwd") your tool must reject it before it reaches Graph API.
+What you already have: Count capping (min(count, 50)), email ID passed to Graph as-is.
+What’s missing: No check that email_id looks like a real Graph API ID. No check that keyword in search doesn’t contain injection patterns. No size validation on body_text before saving drafts.
+Where it lives in your code: utils/validator.py — already started. Needs validate_email_id() and sanitise_string() functions added.
+
+2. Rate Limiting
+What it means for your project:
+If LibreChat’s agent goes into a loop and calls list_emails 200 times in 10 seconds, your server will hammer Microsoft Graph API until Graph throttles you or bans the token.
+What you already have: Nothing — currently unlimited.
+What’s missing: A per-user, per-tool call rate limiter at the FastMCP middleware layer.
+Where it lives: server.py — FastMCP supports middleware. One middleware class, ~20 lines of code.
+Industry note: IBM’s 2025 Cost of a Data Breach Report found that 97% of organizations that suffered an AI-related breach lacked proper AI access controls. ￼
+
+3. Authentication & Authorization
+What it means for your project:
+You have delegated OAuth working. But right now ANY valid Microsoft token can call ANY tool. There’s no check that the token’s scopes actually cover what the tool is trying to do.
+What you already have: Token extraction in graph_auth.py. Delegation works.
+What’s missing: Scope validation — check the token has Mail.Read before calling list_emails, check it has Mail.ReadWrite before calling save_draft_to_outlook. If scope is missing, return a clear “permission denied” instead of letting Graph API return a cryptic 403.
+Where it lives: auth/graph_auth.py — add a validate_token_scopes(required_scopes) function.
+
+4. Audit Logging
+What it means for your project:
+You already have utils/audit_logger.py built and integrated. Every tool call writes a JSON line to logs/audit.log.
+What’s missing: Log rotation is configured (30 days) but not tested. No alerting if a tool is called an unusual number of times. No dashboard.
+Current status: ✅ 80% done. Finish by testing the log file appears after a real tool call.
+
+5. Data Privacy
+What it means for your project:
+Email bodies contain personal data — names, medical information, financial data, legal discussions. Right now:
+	•	audit_logger.py correctly excludes body content from logs ✅
+	•	temp_attachments/ stores downloaded files temporarily ✅
+	•	But there is no cleanup routine that deletes files from temp_attachments/ after processing
+What’s missing: Auto-cleanup of temp_attachments/ after each tool call in attachment_client.py. And a check that LOG_LEVEL=DEBUG never logs email content even accidentally.
+Where it lives: graph/attachment_client.py — add finally: cleanup_temp_file(file_path) after parsing.
+
+6. Human-in-the-Loop (HITL)
+What it means for your project:
+A human-in-the-loop email agent is a workflow where the model reads incoming mail, classifies it, and drafts replies — but a human must approve each draft before it sends. The agent never fires a reply on its own. ￼
+In your project you already have HITL partially — the compose/save separation means nothing goes to Outlook without user saying “yes save it.” But this is informal. A proper HITL gate means:
+	•	The agent explicitly asks “Shall I proceed?” before high-risk actions
+	•	The user’s yes/no is logged
+	•	If no confirmation comes, the action does not proceed
+High-risk actions in your project that need HITL gates:
+
+
+
+|Action                 |Risk level                      |HITL needed             |
+|-----------------------|--------------------------------|------------------------|
+|`save_draft_to_outlook`|Medium — creates Outlook draft  |✅ Already informal      |
+|`save_mom_as_draft`    |Medium — MOM sent to attendees  |✅ Already informal      |
+|`create_draft_invite`  |Medium — calendar event created |✅ Already informal      |
+|`move_email`           |High — destructive, hard to undo|⚠️ Needs explicit confirm|
+|`create_folder`        |Low                             |❌ Not needed            |
+|`add_task_planner`     |Medium — visible to team        |⚠️ Needs confirm         |
+
+Where it lives: In the instruction field of high-risk tools — add explicit “Ask the user to confirm before proceeding” language.
+GitHub Copilot Workspace implemented HITL as a core feature — every proposed multi-file change requires explicit developer approval before execution. ￼ Same principle applies here.
+
+7. LLM Guardrails
+What it means for your project:
+By using a combination of rule-based and AI-assisted mechanisms, guardrails create boundaries around the acceptable inputs and behavior of generative AI applications to enforce security, safety, and compliance in LLM interactions. ￼
+In your project this means:
+	•	The instruction field in every tool tells LibreChat’s LLM exactly what to do and what NOT to do
+	•	utils/governance.py already has the rules — they need to be injected consistently
+What you already have: governance.py with BASE_RULES, MOM_RULES, DRAFT_RULES etc. ✅
+What’s missing: Rules are not yet injected into every tool. The batch files we just delivered partially fix this.
+Industry context: The OWASP Top 10 for LLM Applications 2025 places prompt injection at #1 and sensitive information disclosure at #2, with both classes of failure mitigated primarily through input and output validation rather than through prompt engineering alone. ￼
+
+8. Error Handling
+What it means for your project:
+You already have utils/error_handler.py with format_tool_error(). ✅
+What’s missing: The ODataError classification is there but Graph SDK sometimes wraps errors differently in Python 3.12. Need one more error class handled: ServiceException from the SDK.
+Where it lives: utils/error_handler.py — add one elif "ServiceException" clause.
+
+9. Compliance (GDPR / ISO 27001)
+What it means for your project:
+Since you’re at Fichtner GmbH (a German company), GDPR applies directly. Key requirements:
+	•	Data minimisation — only fetch what you need. ✅ Already done (we only read, never store email bodies)
+	•	Retention — logs/audit.log rotates after 30 days. ✅ Already configured
+	•	Right to erasure — if a user asks to delete data, there’s nothing to delete from your server side ✅ (you don’t store emails)
+	•	Data residency — all processing happens on FGSV297 inside Fichtner’s network ✅
+	•	Consent — user initiates every action via LibreChat ✅
+What’s missing: A one-page data flow document describing what data flows where. This is not code — it’s a document for your compliance/legal team.
+
+Summary — what’s done vs what to build next
+
+
+
+|Area                |Status   |Next action                                                        |
+|--------------------|---------|-------------------------------------------------------------------|
+|Input Validation    |🟡 Partial|Add `validate_email_id()` and `sanitise_string()` to `validator.py`|
+|Rate Limiting       |🔴 Missing|Add middleware to `server.py` — ~20 lines                          |
+|Auth & Authorization|🟡 Partial|Add scope validation to `graph_auth.py`                            |
+|Audit Logging       |🟢 Done   |Test log file appears after real tool call                         |
+|Data Privacy        |🟡 Partial|Add `temp_attachments/` cleanup after processing                   |
+|HITL                |🟡 Partial|Strengthen `move_email` and `add_task_planner` instructions        |
+|LLM Guardrails      |🟡 Partial|Finish injecting governance rules into all tools (batch 2 done)    |
+|Error Handling      |🟢 Done   |Add `ServiceException` handler                                     |
+|Compliance          |🟡 Partial|Write data flow document for legal team                            |
+
+The constrained environment reality
+You cannot use external tools like Bifrost, NeMo Guardrails, or Azure Content Safety without additional procurement and approval. That means everything above must be implemented as:
+	•	Python code in your existing files — no new infrastructure
+	•	Prompt engineering in instruction fields — no external moderation API
+	•	FastMCP middleware — already available in your stack
+	•	utils/ layer functions — validator, governance, audit logger
+This is actually the right approach for an internal corporate tool. Context availability is not the same as policy enforcement. To improve reliability, several additional layers can be introduced — persistent workspace rules that the LLM always consults before generating outputs. ￼ That is exactly what your governance.py implements.
+
+Shall I now produce the code for the two biggest missing pieces — rate limiting middleware and scope validation — as the next MD file?​​​​​​​​​​​​​​​​
