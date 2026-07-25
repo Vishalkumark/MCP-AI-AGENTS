@@ -1,0 +1,91 @@
+```python
+
+"""
+bin/diag_list_emails.py
+=======================
+Diagnostic — calls list_emails through the MCP server and prints the RAW
+payload the server returns, before LibreChat or any model sees it.
+
+Tells us which half of the system is at fault:
+  - sender shows as Ellipsis      → Fix 1 not applied (or not saved/restarted)
+  - is_read missing / None        → server-side problem, Graph or mapping
+  - both correct                  → server is fine, the model is ignoring it
+
+Usage (from the project root, venv active, server running):
+    python bin/get_token.py
+    python bin/diag_list_emails.py
+"""
+import sys, json, asyncio, httpx
+from pathlib import Path
+
+# Put the project root on sys.path so "config.settings" resolves
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from config.settings import settings
+
+TOKEN = json.loads((Path(__file__).parent / "token.json").read_text())["access_token"]
+MCP_URL = f"http://localhost:{settings.MCP_PORT}/mcp"
+
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "X-Auth-Token": TOKEN,                      # fallback header
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+}
+
+
+def parse_sse(text: str) -> dict:
+    """
+    FastMCP answers as Server-Sent Events — 'event:' and 'data:' arrive on
+    separate lines, so we scan for the first data: line holding a result.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        content = data.get("result", {}).get("content", [{}])
+        if content:
+            return json.loads(content[0].get("text", "{}"))
+    return {}
+
+
+async def main():
+    async with httpx.AsyncClient(timeout=30) as client:
+        # MCP requires an initialise handshake before any tool call
+        init = await client.post(MCP_URL, headers=HEADERS, json={
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "diag", "version": "1.0"}},
+        })
+        session_id = init.headers.get("mcp-session-id", "")
+
+        call = await client.post(
+            MCP_URL,
+            headers={**HEADERS, "mcp-session-id": session_id},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": "list_emails", "arguments": {"count": 3}}},
+        )
+        result = parse_sse(call.text)
+
+    emails = result.get("emails", [])
+    print(f"\nEmails returned: {len(emails)}\n")
+    for i, m in enumerate(emails, 1):
+        # !r shows the repr — an Ellipsis prints as 'Ellipsis', not blank
+        print(f"{i}. sender  = {m.get('sender')!r}")
+        print(f"   is_read = {m.get('is_read')!r}  (type: {type(m.get('is_read')).__name__})")
+        print(f"   subject = {m.get('subject')!r}\n")
+    print("Top-level keys:", list(result.keys()))
+
+
+asyncio.run(main())
+
+```
