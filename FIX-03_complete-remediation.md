@@ -2205,3 +2205,75 @@ Reconnect the MCP server first.
 | **HITL gates on `move_email` / `add_task_planner`** (§5b) | Instruction-only changes, easy — but `move_email` to `deleteditems` is destructive and deserves the same care as the invite gate rather than being tacked on here |
 | **Planner tools** (B-01) | Externally blocked on Azure admin consent |
 | **systemd unit** (B-04) | Server team's task. Pairs naturally with E1 |
+
+
+
+---
+
+
+State file updated. Here's the verdict.
+
+34 of 36 passed — and the two Highs are dead
+
+Round 7 held at every step. Preview rendered, irreversibility warned, refusal honoured with nothing created, then a real invite sent and received by a real colleague. That closes L-02 and F-17 together — which is exactly why they had to ship together. The F-17 trap (a tool that emails external parties while claiming to save a draft) never got a chance to fire, because the D-15 split landed with the L-02 fix rather than after it.
+
+B-02 resolved itself. The plan said a clean 403 would confirm the missing grant. Instead POST /me/events just worked — so Calendars.ReadWrite is already granted. No Azure escalation. That blocker was hypothetical all along.
+
+Thirteen findings close on their tests: F-04, F-05, F-08, F-11, F-14, F-15, F-16, F-18, F-23, F-25, F-17, plus F-03 and half of F-10. The markdown-table, read-status, safe-key and governance-duplication families are now behaviour-verified, not just syntax-verified — which was the entire point of running this.
+
+Two of your results aren't failures:
+
+- T7.3, no self-invite — expected Graph behaviour. The organiser is never sent an invitation; the event is written straight to your calendar. Worth confirming it appeared there, but nothing to fix.
+- T5.4 — the "Planner isn't available" message is correct and honest. That's B-01 behaving properly.
+
+What actually needs work
+
+L-03 (T3.4) — don't patch this yet. Your own observation undermines the diagnosis: if sending the draft manually nests it correctly under the original conversation, the conversationId is right, which is not what a standalone save_draft_to_outlook email looks like. Outlook lists reply drafts flat in the Drafts folder regardless of threading. And T4.4 — the same threading path via compose_followup — passed cleanly. So the code is probably correct and the Drafts view is lying to you. One grep settles it; patching first risks "fixing" working code.
+
+F-27 (new, Med) — you asked for Planner, got To-Do. The heading said "Microsoft To-Do" so it wasn't a lie, but it answered a Planner question with a different data source without saying it was substituting. Instruction-level fix.
+
+F-28 (new, Med) — list_emails_paged returns Sent Items mixed into Inbox; list_emails doesn't. The two tools disagree about what "my emails" means. Almost certainly /me/messages instead of /me/mailFolders/inbox/messages.
+
+F-13 / T8.2 — you reported it with T8.1's wording ("a Mermaid pie chart") for a bar chart request, so I can't tell what happened. Leaving it open rather than guessing.
+
+⚠️ The one urgent thing — F-07, escalated to High
+
+Your log listing exposed something worse than the ledger recorded. .gitignore line 41 is logs/audit.log — a single exact path. It does not match:
+
+- logs/app.log (63 KB) — brand new, created by F-11's own fix, full of tracebacks
+- logs/app.log.2026-07-27
+- eight rotated logs/audit.log.2026-07-2X files, up to 44 KB, carrying real user email addresses
+
+F-11's fix quietly widened F-11's blast radius. This is the only open finding that gets worse with time — every push bakes it further into Azure DevOps history, and it's a GDPR item for a German entity.
+
+Step 1 — run these two read-only checks first
+
+Order matters here: if the files are already tracked, widening .gitignore accomplishes nothing on its own.
+
+cd /opt/FiGPT_OutlookMCP
+git ls-files logs/ bin/
+git status --short
+
+Step 2 — the .gitignore patch (safe in every case)
+
+Find (line 41):
+logs/
+(your grep showed the rule resolving to logs/audit.log — paste the actual line back if it differs)
+
+Replace with:
+# Runtime logs — contain real user email addresses and tracebacks.
+# Must match rotated files too: app.log.2026-07-27, audit.log.2026-07-26, ...
+logs/*.log
+logs/*.log.*
+!logs/.gitkeep
+
+The !logs/.gitkeep line keeps the directory itself in the repo so the app doesn't fail on a fresh clone. If git ls-files returned anything, tell me and I'll give you the git rm --cached commands — that has to be done carefully, since a wrong flag deletes the live logs off the server.
+
+Three questions, then I write FIX-04
+
+1. L-03, the decisive one. What does the audit log say fired for T3.4?
+grep -E "save_reply_draft|save_draft_to_outlook" logs/audit.log | tail -5
+2. T8.2 — was it actually a bar chart, and did the x-axis label appear on it?
+3. Check #36 — was that grep against .env.example or the live .env? It matters: in .env.example it's F-20, a landmine for the next environment. In the live .env it means the server is bound to loopback and something else is holding the proxy together.
+
+✻ Cogitated for 4m 41s
