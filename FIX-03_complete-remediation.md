@@ -2277,3 +2277,179 @@ grep -E "save_reply_draft|save_draft_to_outlook" logs/audit.log | tail -5
 3. Check #36 — was that grep against .env.example or the live .env? It matters: in .env.example it's F-20, a landmine for the next environment. In the live .env it means the server is bound to loopback and something else is holding the proxy together.
 
 ✻ Cogitated for 4m 41s
+
+
+---
+
+
+1. F-07 — the picture just changed
+
+git ls-files logs/ bin/ returned only .py files. No logs/ entries, no bin/del.txt. So nothing sensitive is in the index — git rm --cached is not needed, and that's the good outcome.
+
+But git status --short came back completely empty, and that doesn't fit the audit's claim. If .gitignore really only matched the exact path logs/audit.log, then logs/app.log, the eight rotated logs/audit.log.YYYY-MM-DD files and bin/del.txt would all be untracked-and-not-ignored, and would have shown up as ?? lines. They didn't.
+
+There are three ways that happens, and they lead to different conclusions:
+
+- A broader ignore rule already exists somewhere else in .gitignore that the audit missed by reading only line 41. → F-07 is a false alarm and closes with no code change.
+- status.showUntrackedFiles=no is set in git config. → the files are exposed and git status is simply not telling you. Worst case, and invisible.
+- The files aren't there any more. Unlikely — F-11's verification found logs/app.log at 63 KB on 27 Jul.
+
+I'm not going to patch .gitignore on a guess. Four cheap commands settle it:
+
+cat -n .gitignore
+git check-ignore -v logs/app.log logs/audit.log.2026-07-28 bin/del.txt
+git config --get status.showUntrackedFiles
+git log --all --oneline -- logs/ 'bin/*.txt'
+
+Read them as: check-ignore prints the rule that matches each file — silence for a file means it is not ignored. The git log --all line is the history check; empty output means these files were never committed on any branch, which is what closes F-07 for good rather than just going forward.
+
+2. L-03 — the grep was aimed at the wrong file
+
+Empty output here is a mechanical miss, not a result. T3.4 ran on 28 July; today is the 31st, and the audit logger rotates daily. Those entries are in logs/audit.log.2026-07-28, not in the current logs/audit.log.
+
+ls -la logs/
+grep -h -E "save_reply_draft|save_draft_to_outlook" logs/audit.log* | tail -20
+
+If that's still empty, the field name is the problem rather than the file, so show me the shape:
+
+tail -2 logs/audit.log
+
+L-03 stays untouched until this returns something — patching it now risks "fixing" code that TEST-01's T4.4 showed is working.
+
+3. F-13 — bar branch confirmed, one thread left
+
+Good, that resolves the T8.2 ambiguity: the bar branch renders, so the reported result was just mislabelled with T8.1's wording. F-13 is no longer a possible broken code path.
+
+What survives is narrower and cosmetic: those days on your x axis are the categories (x-axis [Mon, Tue, …]), which is different from the axis label that the x_label parameter promises. The parameter is still accepted, still documented, still never emitted. That's a two-line fix in FIX-04 — either emit it or drop it from the signature — and it's not worth a round trip now.
+
+
+The new detail: line 65 — the one that wins by last-wins — is missing Mail.Send. Your working .env has it. So anyone provisioning from the template gets the HTTP 421 bug and a token that cannot send mail.
+
+---
+Deliverable — F-20 patch
+
+File: /opt/FiGPT_OutlookMCP/.env.example. It's tracked and your tree is clean, so git checkout .env.example undoes everything if a paste goes wrong.
+
+Apply in order. Each Find string is unique in the file.
+
+Patch 1 — line 13, incomplete scopes
+
+Find:
+GRAPH_API_SCOPES=Mail.Read,Calendars.Read,User.Read
+Replace with:
+GRAPH_API_SCOPES=Mail.Read,Mail.ReadWrite,Mail.Send,Calendars.Read,Calendars.ReadWrite,Calendars.Read.Shared,User.Read
+
+Patch 2 — lines 29/30, duplicate transport
+
+Find:
+MCP_TRANSPORT=streamable-http
+MCP_TRANSPORT=http
+Replace with:
+# Must be plain "http". "streamable-http" here breaks the nginx proxy —
+# this exact value is what finally made the reverse proxy work.
+MCP_TRANSPORT=http
+
+Patch 3 — lines 32/33, the inverted host
+
+Find:
+# FASTMCP_HOST=0.0.0.0
+FASTMCP_HOST=127.0.0.1
+Replace with:
+# FastMCP 3.x removed host/port from the constructor, so these env vars are the
+# ONLY way to bind. 127.0.0.1 will not accept proxied traffic — the result is HTTP 421.
+FASTMCP_HOST=0.0.0.0
+
+Patch 4 — line 65, the surviving duplicate
+
+Delete this entire line (Patch 1 already made line 13 the complete, authoritative one):
+GRAPH_API_SCOPES=Mail.Read,Mail.ReadWrite,Calendars.Read,Calendars.ReadWrite,Calendars.Read.Shared,User.Read
+
+Verify
+
+grep -n "FASTMCP_HOST\|FASTMCP_PORT\|MCP_TRANSPORT\|GRAPH_API_SCOPES" .env.example
+git diff .env.example
+
+Expect exactly one active line each for FASTMCP_HOST, MCP_TRANSPORT and GRAPH_API_SCOPES. If FASTMCP_PORT doesn't appear at all, tell me — it needs adding as FASTMCP_PORT=8000, since host alone won't bind correctly.
+
+Nothing needs restarting; .env.example is a template and the running server reads .env.
+
+---
+Send me the F-07 command block from §1 and the corrected L-03 grep from §2 whenever you have them. I'll update PROJECT_STATE.md once F-07 and L-03 actually resolve, rather than recording half-answers.
+
+---
+########################################################################################################
+
+Understood — I'll get the F-07 and L-03 results whenever they land. Starting the README now.
+
+First I need the real file tree and the exact 36 tool names rather than reconstructing them from the state file. Pulling both from the snapshot.
+
+  Searched for 2 patterns
+
+35 tools in the snapshot — consistent with the D-15 split taking create_draft_invite to 36 live. Now the file tree.
+
+  Searched for 2 patterns, read 1 file
+
+Complete tree recovered. Reading the entry points so the setup and config sections are accurate rather than inferred.
+
+  Read 1 file
+
+Good — that confirms mcp.run(host=, port=) is passed explicitly (relevant to F-21) and that REQUESTY_API_KEY is a hard startup requirement despite the LLM path being dormant. One last check so the tool-to-client mapping isn't guesswork.
+
+  Searched for 1 pattern
+
+I have everything I need — full tree, all 36 tools, the exact tool→graph-client wiring, and the config surface. Writing the file now.
+
+● Write(README.md)
+Wrote 1409 lines to README.md
+# FiGPT OutlookMCP
+
+**An enterprise Model Context Protocol (MCP) server that gives XYZCONSULT GROUP's LibreChat assistant safe, governed, read-and-write access
+to a user's Outlook mailbox, calendar and tasks over Microsoft Graph.**
+
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![FastMCP](https://img.shields.io/badge/fastmcp-3.4.3-blue)
+![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen)
+![Tools](https://img.shields.io/badge/MCP%20tools-36-blue)
+![Transport](https://img.shields.io/badge/transport-http-lightgrey)
+… +1524 lines
+
+Written to E:\Projects\Outlook-mcp-proj\README.md — 16 sections, ready to drop in at /opt/FiGPT_OutlookMCP/README.md (it replaces the existing stub, which is just the file tree).
+
+What's in it
+
+Everything you listed, in your order: title + one-line purpose, badge row, TOC table plus a quick-jump anchor bar for the setup-heavy sections, then Overview → Architecture → Structure → Tools → Getting Started → Configuration → Usage → Testing → Runbooks → Security → Governance → Troubleshooting → ADRs → Roadmap → Hygiene → License.
+
+Anchors are all lowercase-hyphenated and I kept & and / out of every heading ("Governance and Contribution", "Runbooks and Operations") so the generated anchors stay clean in both GitHub and Azure DevOps.
+
+Three Mermaid diagrams — system context, layered design, request-lifecycle sequence — plus a fourth sequence diagram for the compose→approve→save write path, since that gate is the system's main safety property and deserved its own picture. Mermaid rather than images because it's already this project's chart standard and it stays diffable.
+
+Every file explained, grouped by folder, with the key functions named per module. All 36 tools in ten tables by family, each with a read/write/compose/save type marker and its execution path through the layers, followed by the nine-step flow every tool shares and the uniform return contract.
+
+Things I dug out of the snapshot that are worth flagging
+
+A ledger error. PROJECT_STATE.md puts F-27's list_tasks in tools/task_tools.py. It's actually in tools/followup_tools.py — along with add_task_todo, add_task_planner, track_followups, check_email_replied and compose_followup. task_tools.py holds only extract_tasks. Worth correcting before FIX-04 sends you to the wrong file. I noted it inline in §3.4.
+
+A fourth config trap, previously unrecorded. REQUESTY_API_KEY is declared with _require_env() in config/settings.py, so the server refuses to start 
+A fourth config trap, previously unrecorded. REQUESTY_API_KEY is declared with _require_env() in config/settings.py, so the server refuses to start without it — despite the LLM path being dead code under ADR-01/ADR-14. Anyone provisioning a fresh environment hits a hard EnvironmentError for a service the project deliberately never calls. Documented as Trap 4 with the placeholder workaround.
+
+F-21 has a partial answer. server.py does pass mcp.run(transport=, host=, port=) explicitly from settings, so MCP_HOST/MCP_PORT aren't dead — but since FASTMCP_* is what actually binds, they're effectively cosmetic. I documented them as "log display only." Whether mcp.run() silently ignores them still needs the runtime check.
+
+The invite path's POST /me/events lives in graph/availability_client.py, not a calendar module — odd placement, and the same file F-26 flags for datetime.utcnow().
+
+Two placeholders you need to substitute
+
+- X-<Company>-Authorization — I used the placeholder per ADR-13 rather than the literal hardcoded header name. Substitute your real value in §2.3 and §7.3.
+- <corp-domain> — appears in the URLs throughout.
+
+Two things I didn't invent
+
+License — I had no source for one, so I wrote it as proprietary/internal to XYZCONSULT GROUP and flagged that no LICENSE file exists in the repo. Correct it if the actual terms differ. I did document the real obligation: pymupdf is AGPL-3.0, which carries network-use conditions and is an open compliance item before production.
+
+Badges — there's no CI, so they're static shields.io images reflecting the 2026-07-28 verified state. I said so directly under the badge row rather than implying a pipeline exists. If the host blocks shields.io, swap them for a plain table.
+
+I also kept the NFR section honest — availability is marked not met (no systemd), rate limiting missing, and the GDPR data-flow doc outstanding. An enterprise README that claims those are fine would fail its first review.
+
+Send the F-07 and L-03 output when you have it and I'll pick that thread back up.
+
+---
+
