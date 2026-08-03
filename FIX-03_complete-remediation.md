@@ -2453,3 +2453,55 @@ Send the F-07 and L-03 output when you have it and I'll pick that thread back up
 
 ---
 
+Recorded. Re-issued block — the CR scan is now a Python heredoc, which sidesteps the whole problem: no flag clusters, no pipes, no $'\r', and no backslashes anywhere in the text.
+
+cd /opt/FiGPT_OutlookMCP
+
+python3 <<'PY'
+import subprocess, pathlib
+CR = bytes([13])
+
+tracked = subprocess.run(['git','ls-files'], capture_output=True, text=True).stdout.splitlines()
+print("tracked files total       :", len(tracked))
+print("tracked under .venv/      :", len([f for f in tracked if f.startswith('.venv/')]))
+print("tracked under logs/       :", len([f for f in tracked if f.startswith('logs/')]))
+print("tracked under temp_attach :", len([f for f in tracked if f.startswith('temp_attachments/')]))
+
+print("--- files containing carriage returns ---")
+skip = {'.git', '.venv', '__pycache__', 'logs', 'temp_attachments', 'charts'}
+hits = 0
+for p in sorted(pathlib.Path('.').rglob('*')):
+    if any(s in p.parts for s in skip):
+        continue
+    if not p.is_file():
+        continue
+    try:
+        data = p.read_bytes()
+    except Exception:
+        continue
+    if bytes([0]) in data[:4096]:
+        continue
+    n = data.count(CR)
+    if n:
+        print(n, p)
+        hits += 1
+print("total files with CR:", hits)
+PY
+
+Then check 4, two plain greps:
+
+grep -n "me.messages.get" graph/mail_client.py
+grep -n "mail_folders.by_mail_folder_id" graph/mail_client.py
+
+What I'm looking for:
+
+- tracked files total — sets the scale. If it's in the thousands, .venv is most of the repo and the git rm -r --cached is a large but harmless one-time commit.
+- logs/ and temp_attach counts — expect 0 both. Non-zero contradicts the 08-01 git log --all result and F-07 goes back to High.
+- The CR list — if run_all_test.sh appears, F-09 is a two-part fix and must not be patched blind. If .py files appear, the FIX-03 paste path injected them across eleven modules and gets one sweep, not eleven.
+- The two greps — if both show me.messages.get, the widened F-28 is confirmed live and the fix is two call sites.
+
+Nothing gets patched until this returns. After that, the first FIX-04 block writes itself: .gitignore rewrite + git rm -r --cached .venv + the CR sweep, all hygiene, all in one commit — then the behaviour fixes F-27 and F-28 separately.
+
+✻ Cooked for 1m 29s
+
+※ recap: We're hardening the FiGPT Outlook MCP server toward enterprise-grade, and I'm gathering evidence before the FIX-04 hygiene batch. Next: run the Python heredoc and two greps I posted, then paste the output back. (disable recaps in /config)
