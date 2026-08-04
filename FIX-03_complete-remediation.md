@@ -2505,3 +2505,38 @@ Nothing gets patched until this returns. After that, the first FIX-04 block writ
 ✻ Cooked for 1m 29s
 
 ※ recap: We're hardening the FiGPT Outlook MCP server toward enterprise-grade, and I'm gathering evidence before the FIX-04 hygiene batch. Next: run the Python heredoc and two greps I posted, then paste the output back. (disable recaps in /config)
+
+
+
+---
+
+
+
+- F-29 — re-diagnosed. 935 CRs in email_tools.py = whole-file CRLF from the Windows origin, not paste injection. Harmless at runtime (the live server proves it). Real fix is a .gitattributes + git add --renormalize commit whenever you want it — not urgent, and deliberately not in the F-07 commit since it would renormalize 38 files at once.
+- F-09 — run_all_test.sh has no CRs. One-part fix, smart quotes only, patch it whenever.
+
+Now updating the hand-off doc so this survives the topic switch.
+
+Hand-off doc updated. Wrapped up:
+
+┌─────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Finding │                                                                 Outcome                                                                 │
+├─────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ F-07    │ ✅ No leak, either on disk or in history. Cleared to commit — one paste, above                                                          │
+├─────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ F-28    │ Five call sites found, but only three are wrong — the two $search calls should span all folders. Patches A+B delivered; site 327 parked │
+├─────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ F-29    │ Re-diagnosed and downgraded Med → Low. Windows-origin CRLF, not paste injection. Zero urgency, own commit later                         │
+├─────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ F-09    │ Unblocked — one-part fix after all                                                                                                      │
+└─────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Two of those got smaller on evidence, which is the pattern this project keeps producing.
+
+One thing to watch when you come back to it: the F-28 patch reuses the existing request_config object against a folder-scoped builder. I'm fairly confident that's fine — Python doesn't enforce the annotation and the query params are identical — but constructing config classes for the wrong builder is precisely what caused the L-02 crash, so if list_emails_paged throws an SDK type error instead of returning mail, that's the cause and not something subtle. It's noted in PROJECT_STATE.md §7 step 2 so it won't get lost.
+
+Nothing is waiting on you for evidence. Ready for the new work whenever you are.
+
+✻ Churned for 2m 52s
+
+---
