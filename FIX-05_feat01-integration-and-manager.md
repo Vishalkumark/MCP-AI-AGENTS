@@ -830,3 +830,132 @@ change, separately from the `.gitattributes` / CRLF commit (F-29).
 | F-27 | 🟡 code applied, tests green after FIX-05 §1–§2; closes on TEST-01 T9.4/T9.5 |
 | F-07 | ✅ confirmed landed — `git status` shows `.venv/` untracked, branch 1 commit ahead |
 | **F-30** *(new, Low)* | `get_my_profile` reported no manager and the model inferred the user *was* the manager. Directory data gap (Manager attribute unset in Entra ID) plus a `.get(k, default)` misuse that renders `None` instead of `—`. Both fixed in §5; the directory half needs an admin |
+
+
+---
+
+All green. Here's the commit — three commits, not one, because they're three unrelated changes and a mixed commit is unbisectable.
+
+⚠️ First: .gitignore still doesn't match .venv/
+
+Your earlier git status listed .venv/ under Untracked files. That's proof the ignore rule is missing — git never lists an ignored path. The untrack itself worked (44,962 files are out of the index), but one git add -A puts them all back.
+
+cd /opt/FiGPT_OutlookMCP
+
+grep -q '^\.venv/' .gitignore || printf '\n# The real virtualenv. The old "venv/" line never matched ".venv/" — that was F-07.\n.venv/\n' >> .gitignore
+
+git check-ignore -v .venv/bin/activate     # expect: .gitignore:NN:.venv/  .venv/bin/activate
+git status --short                          # .venv/ must now be ABSENT from this list
+
+Do not continue until .venv/ is gone from git status. And for these commits, stage by explicit path only — no git add -A, no git add ..
+
+Commit 1 — FEAT-01
+
+git add utils/task_grouping.py \
+        graph/task_client.py \
+        tools/task_tools.py \
+        tests/test_task_grouping.py \
+        tests/test_task_tools.py \
+        bin/diag_tasks.py \
+        .gitignore \
+
+git commit -m @'
+FEAT-01: grouped Planner and To-Do task views (closes F-27)
+
+Adds list_planner_tasks and list_todo_tasks as two separately-named tools.
+Results are pre-grouped: overdue, then due within TASK_HORIZON_DAYS grouped
+by plan/list name, then everything else grouped and newest-first.
+
+Two tools rather than one tool with a source parameter, deliberately. A
+single tool makes substitution a legal move -- the model can satisfy "call
+the task tool" while silently changing which system it read, which is
+exactly what F-27 was. Separate names make it structurally impossible:
+list_planner_tasks has no code path that reaches To-Do. Same fix that
+closed F-17 via the D-15 compose_invite/save_invite split.
+
+Grouping logic lives in utils/task_grouping.py as pure functions so the
+ordering rules are unit-testable without mocking Graph. Regression guards
+included for F-08 (aware/naive datetimes), F-26 (utcnow) and F-12/F-15
+(pipes and newlines in titles breaking markdown rows).
+
+bin/diag_tasks.py proves the Graph endpoints and SDK fluent paths against
+the live tenant before trusting the tools -- same approach that closed
+L-01. It decodes the token scp claim first, because granting an Azure
+permission does not upgrade a token that already exists.
+
+Verified: 112 tests pass, /health reports 38 tools, both tools confirmed
+working against the live mailbox in LibreChat.
+
+Unblocked by B-01: Tasks.ReadWrite granted with admin consent.
+Group.Read.All turned out not to be needed for plan-title resolution.
+'@
+
+Commit 2 — the manager lookup
+
+git add graph/graph_client_factory.py tools/profile_tools.py
+
+git commit -m @'
+get_my_profile: include the signed-in user's direct manager (F-30)
+
+Adds GET /me/manager alongside GET /me. No new permission -- User.Read
+already covers it.
+
+Also adds an explicit $select for department: it is not in Graph's default
+/me property set, so reading user.department without one returns None
+forever and looks like a Graph fault rather than a missing projection.
+The $select is guarded with a fallback, because constructing an SDK
+query-parameter class is precisely what crashed in L-02.
+
+A user with no manager makes Graph return 404 ResourceNotFound, not an
+empty object. That is handled as an expected outcome, not an error: the
+tool reports the absence and the instruction forbids inferring a manager
+from context. The model had previously concluded the user was their own
+manager -- an F-27-shaped failure of filling an absence with a guess.
+'@
+
+Commit 3 — F-28, but verify it first
+
+graph/mail_client.py is modified in your working tree — that's the F-28 folder-scoping patch from session 10, and it has never been behaviour-verified. Don't commit it blind.
+
+In LibreChat, ask for 50 emails (list_emails_paged, count=50) and confirm no Sent Items appear. Then:
+
+git add graph/mail_client.py
+
+git commit -m @'
+F-28: scope the inbox reads to the inbox folder
+
+fetch_recent_messages and fetch_messages_paged both called
+client.me.messages.get(), which is GET /me/messages -- every folder, not
+the inbox. isDraft eq false excluded Drafts but never Sent Items, so
+list_emails_paged returned sent mail mixed into inbox results. list_emails
+had the same defect and only looked correct because top=10 never reached
+back far enough to surface one.
+
+Both now go through mail_folders.by_mail_folder_id("inbox").messages,
+reusing the existing request_config object unchanged -- constructing a new
+folder-scoped config class is the L-02 failure mode.
+
+The two $search call sites are deliberately left unscoped: searching all
+folders is what "search my email" means. The no-filter fallback branch at
+line ~327 is still outstanding and tracked separately.
+'@
+
+If it throws an SDK type error instead of returning mail, that's the reused request_config — tell me and I'll swap the import.
+
+Then push
+
+git ls-files | wc -l        # expect ~78 (was 45,033)
+git log --oneline -4
+git push origin main
+
+Where that leaves you
+
+Both open workstreams have moved. Workstream 2 is delivered and F-27 is closed; B-01 is resolved. Three things remain outstanding, all small:
+
+1. Admin action — set the Manager attribute in Entra ID. Nothing else needed for F-30.
+2. One unproven path — your only To-Do task has no due date, so to_utc()'s To-Do dateTimeTimeZone branch has never run against live data. It's unit-tested against a stub. Put a due date on a To-Do task whenever convenient and it self-verifies.
+3. FIX-04 — the hygiene batch (F-19 pinning, F-21, F-22, F-24, F-26), plus F-09 which I delivered at the start of this session and you haven't applied yet. Say the word and I'll write it as one block.
+
+Also still parked: F-28 site 327, which needs sed -n '270,330p' graph/mail_client.py when you want it.
+
+✻ Sautéed for 2m 7s
