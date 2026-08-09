@@ -959,3 +959,81 @@ Both open workstreams have moved. Workstream 2 is delivered and F-27 is closed; 
 Also still parked: F-28 site 327, which needs sed -n '270,330p' graph/mail_client.py when you want it.
 
 ✻ Sautéed for 2m 7s
+
+---
+
+
+Good. Applying F-28 A + B then.
+
+Those patches were delivered in chat on 08-04 and never written to a file, so let me reconstruct them against the snapshot before sending — the ledger flags the snapshot as pre-FIX-03 on this file, so I'll have you confirm with a grep rather than trust it.
+
+  Searched for 1 pattern, read 2 files
+
+Both sites are identical in shape — same query_params / request_config construction, same one-line call. The patch is the same one-expression swap at each, and nothing else in either function changes.
+
+Worth noting: fetch_recent_messages's own docstring already claims it fetches "from the user's inbox". It never did. Patch A makes the docstring true.
+
+---
+Step 1 — confirm the line numbers
+
+grep -n 'client\.me\.messages\.get' graph/mail_client.py
+
+Expect 5 hits. The two you're editing are the first (in fetch_recent_messages, ~117) and the last (in fetch_messages_paged, ~368). Paste the output if the count isn't 5 — that means the file moved since the 08-04 grep and I'd rather re-anchor than have you edit the wrong line.
+
+---
+Patch A — fetch_recent_messages (~line 117)
+
+Find (two lines — the comment makes this block unique in the file):
+
+    # Step 3: Execute the call — this maps to GET /me/messages.
+    response = await client.me.messages.get(request_configuration=request_config)
+
+Replace with:
+
+    # Step 3: Execute the call.
+    # F-28: this used to be `client.me.messages` = GET /me/messages, which is
+    # EVERY folder — so Sent Items came back in what the docstring above
+    # promises is an inbox listing. `isDraft eq false` hid the Drafts half and
+    # made the bug look absent. Now GET /me/mailFolders/inbox/messages.
+    # `request_config` is passed through UNCHANGED and deliberately:
+    # constructing a folder-scoped configuration class is the exact move that
+    # caused the L-02 EventsRequestBuilder crash.
+    response = await client.me.mail_folders.by_mail_folder_id("inbox").messages.get(
+        request_configuration=request_config
+    )
+
+---
+Patch B — fetch_messages_paged (~line 368)
+
+This is the original T1.3 symptom — the tool that actually surfaced Sent Items.
+
+Find — the single response = ... line inside fetch_messages_paged. Identical lines exist elsewhere, so go by the line number from Step 1, not a global replace. It's the one directly above messages = response.value if response and response.value else [] at the end of the file's mail section:
+
+    response = await client.me.messages.get(request_configuration=request_config)
+
+Replace with:
+
+    # F-28: inbox-scoped — see the note in fetch_recent_messages.
+    # This is the call that produced the reported symptom: top=50 reached far
+    # enough back that Sent Items appeared alongside Inbox.
+    response = await client.me.mail_folders.by_mail_folder_id("inbox").messages.get(
+        request_configuration=request_config
+    )
+
+---
+Step 2 — verify
+
+grep -n 'client\.me\.messages\.get' graph/mail_client.py          # expect 3 now (was 5)
+grep -n 'mail_folders\.by_mail_folder_id' graph/mail_client.py    # expect 2 (was 0)
+python -m pytest tests/test_mail_tools.py -q
+
+Then restart the server and, in LibreChat:
+
+1. list_emails_paged with count=50 — the actual bug. No Sent Items.
+2. list_emails (the default 10) — still returns mail, unchanged.
+
+The one risk, and what it looks like: if the folder-scoped builder rejects the reused request_config, you'll get a TypeError or an SDK type error rather than mail — not a wrong result, a crash. That's L-02's failure mode exactly. If it happens, stop and send me the traceback; the fix is swapping the import for the folder-scoped MessagesRequestBuilder, and it applies to both patches plus C at once.
+
+Send me the pytest result and what list_emails_paged returns, and I'll log it and move to C.
+
+✻ Brewed for 1m 3s
