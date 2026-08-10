@@ -1428,5 +1428,8 @@ async def fetch_messages_paged(top: int = 50, skip: int = 0) -> list[dict]:
     messages = response.value if response and response.value else []
     return [_message_to_dict(m) for m in messages]
 
-
+---
+"""
+Update the Readme file - Just give me the only areas to be updated
+"""
 
