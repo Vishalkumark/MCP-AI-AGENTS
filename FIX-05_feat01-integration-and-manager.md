@@ -1037,3 +1037,396 @@ The one risk, and what it looks like: if the folder-scoped builder rejects the r
 Send me the pytest result and what list_emails_paged returns, and I'll log it and move to C.
 
 ✻ Brewed for 1m 3s
+
+
+---
+
+Looks like there is some confusion. You better read the complete code file and the terminal output. Then give me what problem are we solving along with the complete update code in a neat md. file. 
+
+
+(.venv) /opt/FiGPT_OutlookMCP$ grep -n 'client.me.messages.get' graph/mail_client.py
+194:    response = await client.me.messages.get(request_configuration=request_config)
+262:        response = await client.me.messages.get(request_configuration=request_config)
+330:    response = await client.me.messages.get(request_configuration=request_config)
+
+(.venv) /opt/FiGPT_OutlookMCP$ grep "^" graph/mail_client.py
+"""
+mail_client.py
+==============
+Contains every Graph API operation related to reading and searching
+Outlook email. This file knows about Graph API mail endpoints and
+nothing else — it has no knowledge of MCP tools, the LLM, or attachments.
+
+Why this file exists:
+    tools/email_tools.py and tools/attachment_tools.py both need to
+    fetch email data. Rather than each tool file calling the Graph SDK
+    directly, they call functions here. This means if Microsoft changes
+    something about how mail endpoints work, this is the only file that
+    needs updating.
+
+Design notes:
+    - Every function here returns plain Python dicts/lists, never raw
+      SDK objects, keeping the "boundary" between Graph SDK specifics
+      and the rest of the app clean.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+from graph.graph_client_factory import get_graph_client
+from utils.logger import get_logger
+import re
+
+logger = get_logger(__name__)
+
+def _clean_body(raw_content: str) -> str:
+    """
+    Strip HTML tags from email body content so the LLM receives
+    clean plain text instead of raw HTML markup.
+    Graph API returns HTML bodies by default for rich-text emails.
+    """
+    if not raw_content:
+        return ""
+    # Remove HTML tags
+    text = re.sub(r"<[^>]+>", " ", raw_content)
+    # Collapse multiple whitespace/newlines into single spaces
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+# ---------------------------------------------------------------------------
+# Helper: _message_to_dict
+# ---------------------------------------------------------------------------
+def _message_to_dict(message) -> dict:
+    """
+    Convert a single Graph SDK Message object into a plain dictionary,
+    matching the shape expected by tools/email_tools.py.
+
+    This helper avoids repeating the same field-mapping logic in every
+    function below.
+    """
+    return {
+        "id": message.id,
+        "subject": message.subject,
+        "from": {
+            "emailAddress": {
+                "name": message.from_.email_address.name if message.from_ else None,
+                "address": message.from_.email_address.address if message.from_ else None,
+            }
+        },
+        "receivedDateTime": (
+            message.received_date_time.isoformat()
+            if message.received_date_time else None
+        ),
+        "hasAttachments": message.has_attachments,
+        "is_read": message.is_read if message.is_read is not None else True,
+        "bodyPreview": message.body_preview or "",
+        "body": {
+            # "content": message.body.content if message.body else "",
+            "content": _clean_body(message.body.content if message.body else ""),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Function: fetch_recent_messages
+# ---------------------------------------------------------------------------
+async def fetch_recent_messages(top: int = 10) -> list[dict]:
+    """
+    Fetch the most recent messages from the user's inbox, ordered by
+    received date (newest first).
+
+    Args:
+        top (int): Maximum number of messages to fetch.
+
+    Returns:
+        list[dict]: A list of message dictionaries (see _message_to_dict).
+    """
+    logger.info(f"Fetching {top} recent messages from Graph API")
+
+    # Step 1: Get an authenticated client scoped to this request.
+    client = get_graph_client()
+
+    # Step 2: Build the query — Graph SDK uses a request configuration
+    #         object to specify query parameters like $top and $orderby,
+    #         mirroring the underlying REST API's query string options.
+    from msgraph.generated.users.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+
+    query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            top=top,
+            orderby=["receivedDateTime DESC"],
+            filter="isDraft eq false",
+            select=["id", "subject", "from", "receivedDateTime",
+                    "hasAttachments", "bodyPreview", "isRead"],
+    )
+
+    request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+        query_parameters=query_params
+    )
+
+    # Step 3: Execute the call, scoped to Inbox (F-28).
+    #         client.me.messages is GET /me/messages = ALL folders,
+    #         which mixed Sent Items into inbox listings.
+    inbox = client.me.mail_folders.by_mail_folder_id("inbox")
+    response = await client.me.mail_folders.by_mail_folder_id("inbox").messages.get(
+        request_configuration=request_config
+    )
+
+    # Step 4: Convert each SDK message object into our plain dict shape.
+    messages = response.value if response and response.value else []
+    return [_message_to_dict(m) for m in messages]
+
+
+# ---------------------------------------------------------------------------
+# Function: fetch_message_by_id
+# ---------------------------------------------------------------------------
+async def fetch_message_by_id(message_id: str) -> dict:
+    """
+    Fetch a single email message's full content by its Graph API ID.
+
+    Args:
+        message_id (str): The unique Graph API message ID.
+
+    Returns:
+        dict: A single message dictionary, including full body content
+              (unlike fetch_recent_messages, which only gives a preview).
+    """
+    logger.info(f"Fetching message by ID: {message_id}")
+
+    client = get_graph_client()
+
+    # This maps to GET /me/messages/{message_id}.
+    message = await client.me.messages.by_message_id(message_id).get()
+
+    return _message_to_dict(message)
+
+
+# ---------------------------------------------------------------------------
+# Function: search_messages_by_keyword
+# ---------------------------------------------------------------------------
+async def search_messages_by_keyword(keyword: str, top: int = 10) -> list[dict]:
+    """
+    Search the user's mailbox for messages matching a keyword, using
+    Graph API's $search query parameter (which searches subject,
+    sender, and body content).
+
+    Args:
+        keyword (str): The search term.
+        top (int): Maximum number of matching messages to return.
+
+    Returns:
+        list[dict]: A list of matching message dictionaries.
+    """
+    logger.info(f"Searching messages for keyword: '{keyword}'")
+
+    client = get_graph_client()
+
+    from msgraph.generated.users.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+
+    # Step 1: Graph API's $search requires the keyword to be wrapped in
+    #         quotes within the query string itself.
+    query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+        search=f'"{keyword}"',
+        top=top,
+        filter="isDraft eq false",
+        select=["id", "subject", "from", "receivedDateTime",
+                "hasAttachments", "bodyPreview", "isRead"],
+    )
+
+    # Step 2: $search has a quirk in Graph API — it requires a special
+    #         header (ConsistencyLevel: eventual) to work correctly
+    #         alongside certain other query options. The SDK exposes
+    #         this via request headers on the configuration object.
+    request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+        query_parameters=query_params,
+    )
+    request_config.headers.add("ConsistencyLevel", "eventual")
+
+    response = await client.me.messages.get(request_configuration=request_config)
+
+    messages = response.value if response and response.value else []
+    return [_message_to_dict(m) for m in messages]
+
+
+# ---------------------------------------------------------------------------
+# Function: search_emails_advanced
+# ---------------------------------------------------------------------------
+async def search_messages_advanced(
+    sender_email: str = "",
+    keyword: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    top: int = 20,
+) -> list[dict]:
+    """
+    Search messages with combined sender, keyword, and date range filters
+    using Graph API's $filter and $search query parameters.
+    """
+    logger.info(
+        f"Advanced search: sender={sender_email}, keyword={keyword}, "
+        f"date_from={date_from}, date_to={date_to}"
+    )
+
+    client = get_graph_client()
+
+    from msgraph.generated.users.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+    from utils.date_utils import parse_date_string
+
+    # Build $filter clauses
+    filter_parts = []
+
+    if sender_email:
+        filter_parts.append(
+            f"from/emailAddress/address eq '{sender_email}'"
+        )
+
+    if date_from:
+        dt_from = parse_date_string(date_from)
+        if dt_from:
+            filter_parts.append(
+                f"receivedDateTime ge {dt_from.strftime('%Y-%m-%dT00:00:00Z')}"
+            )
+
+    if date_to:
+        dt_to = parse_date_string(date_to)
+        if dt_to:
+            filter_parts.append(
+                f"receivedDateTime le {dt_to.strftime('%Y-%m-%dT23:59:59Z')}"
+            )
+
+    filter_str = " and ".join(filter_parts) if filter_parts else None
+
+    # $search and $filter cannot be combined in Graph API —
+    # if both are needed, apply $search and filter dates/sender client-side
+    if keyword and filter_str:
+        # Fetch via search, then filter client-side by date/sender
+        query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            search=f'"{keyword}"',
+            top=min(top * 3, 100),  # fetch more to allow for client-side filtering
+        )
+        request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+            query_parameters=query_params,
+        )
+        request_config.headers.add("ConsistencyLevel", "eventual")
+        response = await client.me.messages.get(request_configuration=request_config)
+        messages = response.value if response and response.value else []
+
+        # Apply sender/date filters client-side
+        from dateutil import parser as dp
+        filtered = []
+        for msg in messages:
+            if sender_email:
+                msg_sender = ""
+                if msg.from_ and msg.from_.email_address:
+                    msg_sender = msg.from_.email_address.address or ""
+                if sender_email.lower() not in msg_sender.lower():
+                    continue
+            # Graph returns tz-aware datetimes; parse_date_string returns
+            # naive ones. Comparing the two raises
+            #   TypeError: can't compare offset-naive and offset-aware
+            # Strip tzinfo from BOTH sides — .replace(tzinfo=None) is a
+            # no-op on an already-naive value, so this is safe either way.
+            if date_from:
+                dt_from = parse_date_string(date_from)
+                if dt_from and msg.received_date_time:
+                    msg_dt = msg.received_date_time.replace(tzinfo=None)
+                    if msg_dt < dt_from.replace(tzinfo=None):
+                        continue
+            if date_to:
+                dt_to = parse_date_string(date_to)
+                if dt_to and msg.received_date_time:
+                    from datetime import timedelta
+                    msg_dt = msg.received_date_time.replace(tzinfo=None)
+                    if msg_dt > dt_to.replace(tzinfo=None) + timedelta(days=1):
+                        continue
+            filtered.append(msg)
+            if len(filtered) >= top:
+                break
+        return [_message_to_dict(m) for m in filtered]
+
+    elif keyword:
+        # Keyword only — use $search
+        query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            search=f'"{keyword}"',
+            top=top,
+        )
+        request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+            query_parameters=query_params,
+        )
+        request_config.headers.add("ConsistencyLevel", "eventual")
+
+    elif filter_str:
+        # Sender/date only — use $filter
+        query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            filter=filter_str,
+            top=top,
+            orderby=["receivedDateTime DESC"],
+        )
+        request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+            query_parameters=query_params,
+        )
+
+    else:
+        # No filters — fall back to recent messages
+        query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            top=top,
+            orderby=["receivedDateTime DESC"],
+        )
+        request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+            query_parameters=query_params,
+        )
+
+    response = await client.me.messages.get(request_configuration=request_config)
+    messages = response.value if response and response.value else []
+    return [_message_to_dict(m) for m in messages]
+
+
+# ---------------------------------------------------------------------------
+# Function: fetch_messages_paged
+# ---------------------------------------------------------------------------
+
+async def fetch_messages_paged(top: int = 50, skip: int = 0) -> list[dict]:
+    """
+    Fetch messages with $skip offset for pagination support.
+
+    Args:
+        top (int): Number of messages per page.
+        skip (int): Number of messages to skip (page offset).
+
+    Returns:
+        list[dict]: A list of message dictionaries.
+    """
+    logger.info(f"Fetching messages page: top={top}, skip={skip}")
+
+    client = get_graph_client()
+
+    from msgraph.generated.users.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+
+    query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+        top=top,
+        skip=skip,
+        orderby=["receivedDateTime DESC"],
+        filter="isDraft eq false",
+        select=["id", "subject", "from", "receivedDateTime",
+                "hasAttachments", "bodyPreview", "isRead"],
+    )
+
+    request_config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration(
+            query_parameters=query_params
+        )
+
+    # Inbox-scoped (F-28) — see fetch_recent_messages.
+    inbox = client.me.mail_folders.by_mail_folder_id("inbox")
+    response = await inbox.messages.get(request_configuration=request_config)
+    messages = response.value if response and response.value else []
+    return [_message_to_dict(m) for m in messages]
+
+
+
