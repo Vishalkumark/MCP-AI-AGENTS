@@ -599,3 +599,33 @@ Date			Leave Days		Activity
 01 January 2027		New Year Leave		Day 6
 02 January 2027		Weekend			Day 7
 03 January 2027		Weekend			Fight Morning 9 AM - 5 PM at chennai Airport
+
+
+Absolutely. Based on your fixed dates, train on Dec 24, package starting Dec 27, and flight on Jan 3, I’d fill it like this.
+
+I would also correct one thing in your table: NJP arrival should ideally be around 1 PM, not 7 PM, based on the train plan we discussed. That gives you a useful half-day on Dec 26.
+
+🏔️ Sikkim + Darjeeling — Master Itinerary
+
+Date	Leave Days	Activity
+24 December 2026	Work day — Evening	🚆 Train from Chennai Egmore at ~7 PM → NJP
+25 December 2026	Christmas Leave	🚆 Journey — Christmas on the train 🎄
+26 December 2026	Weekend	🚆 Reach New Jalpaiguri ~1 PM → 🚐 Package pickup/transfer → Gangtok → Check-in → MG Marg → Rest
+27 December 2026	Weekend	🏔️ Day 1 — Gangtok Local → Rumtek Monastery → Banjhakri Falls → Ganesh Tok → Hanuman Tok → Enchey Monastery → MG Marg
+28 December 2026	Apply Leave	❄️ Day 2 — East Sikkim → Tsomgo/Changu Lake → Baba Harbhajan Singh Temple → Nathula Pass → Gangtok
+29 December 2026	Apply Leave	🏔️ Day 3 — Gangtok → Darjeeling → Scenic mountain drive → Check-in → Chowrasta/Mall Road → Local food
+30 December 2026	Apply Leave	🌅 Day 4 — Darjeeling → Tiger Hill Sunrise → Batasia Loop → Ghoom → Toy Train → HMI → Himalayan Zoo → Tea Garden
+31 December 2026	Apply Leave	🥾 Day 5 — Adventure Day → Short Himalayan hike / rafting / mountain biking* → Darjeeling → 🎆 New Year’s Eve at Chowrasta
+01 January 2027	New Year Leave	☕ Day 6 — Relax & Explore → Darjeeling sightseeing → Tea shopping → Cafés → Afternoon transfer to Siliguri/Bagdogra
+02 January 2027	Weekend	🏞️ Day 7 — Buffer / Adventure / Siliguri → Keep flexible for weather & transport → Stay near Bagdogra
+03 January 2027	Weekend	✈️ Return Flight → Bagdogra → Chennai → Reach Chennai
+
+*Adventure activity will depend on December weather, availability and operating conditions. For your dates, I’d favour a short hike or rafting rather than a serious multi-day trek.
+
+🔥 The trip flow
+
+CHENNAI 🚆 → NJP → GANGTOK 🏔️ → EAST SIKKIM ❄️ → DARJEELING ☕ → BAGDOGRA ✈️ → CHENNAI
+
+And I particularly like keeping Jan 2 as a buffer day. Since you’re travelling during the Christmas/New Year peak and through mountain roads, that extra day protects you from a delayed road journey ruining your Jan 3 flight.
+
+If you want, I can next turn this exact table into a detailed Day 1–Day 7 itinerary with timings, places, travel distances, estimated costs and “must do / optional” tags, while keeping the ₹20–25K/person budget in mind.
