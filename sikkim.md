@@ -585,3 +585,17 @@ without wasting another 2½ days sitting on a train coming home.
 This is the version I’d choose.
 
 One thing I’d do next is lock down the actual train + flight + accommodation strategy before anything else, because your dates overlap Christmas/New Year, which is the expensive/high-demand period. I can work out a ₹20–25K/person “maximum value” version with the exact train, suggested train class, budget hotel areas, shared-taxi points, Nathula permit process, and a shortlist of what to book first.
+
+
+Date			Leave Days		Activity
+24 December 2026	Work day Evening	Train from Egmore at 7 PM
+25 December 2026	Christmus Leave		Journey
+26 December 2026	Weekend			Reach New Jalpaiguri by 7 PM. Package Pick-up Nigh stay and rest.
+27 December 2026	Weekend			Day 1 - 
+28 December 2026	Apply Leave		Day 2
+29 December 2026	Apply Leave		Day 3
+30 December 2026	Apply Leave		Day 4
+31 December 2026	Apply Leave		Day 5
+01 January 2027		New Year Leave		Day 6
+02 January 2027		Weekend			Day 7
+03 January 2027		Weekend			Fight Morning 9 AM - 5 PM at chennai Airport
